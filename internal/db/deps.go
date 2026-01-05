@@ -59,10 +59,10 @@ func (db *DB) HasUnmetDeps(itemID string) (bool, error) {
 
 // DepEdge represents a dependency relationship with item details.
 type DepEdge struct {
-	ItemID       string
-	ItemTitle    string
-	ItemStatus   string
-	DependsOnID  string
+	ItemID          string
+	ItemTitle       string
+	ItemStatus      string
+	DependsOnID     string
 	DependsOnTitle  string
 	DependsOnStatus string
 }

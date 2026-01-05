@@ -49,14 +49,14 @@ func (s Status) IsValid() bool {
 
 // Item represents a task or epic in the system.
 type Item struct {
-	ID          string    // Unique identifier (ts-XXXXXX or ep-XXXXXX)
-	Project     string    // Project scope (e.g., "gaia", "myapp")
-	Type        ItemType  // "task" or "epic"
-	Title       string    // Short description
-	Description string    // Full context, notes, handoff info
-	Status      Status    // Current state
-	Priority    int       // 1=high, 2=medium, 3=low
-	ParentID    *string   // Optional parent epic ID
+	ID          string   // Unique identifier (ts-XXXXXX or ep-XXXXXX)
+	Project     string   // Project scope (e.g., "gaia", "myapp")
+	Type        ItemType // "task" or "epic"
+	Title       string   // Short description
+	Description string   // Full context, notes, handoff info
+	Status      Status   // Current state
+	Priority    int      // 1=high, 2=medium, 3=low
+	ParentID    *string  // Optional parent epic ID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

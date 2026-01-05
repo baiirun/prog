@@ -52,16 +52,17 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 
 // StatusReport contains aggregated project status.
 type StatusReport struct {
-	Project     string
-	Open        int
-	InProgress  int
-	Blocked     int
-	Done        int
-	Ready       int
-	RecentDone  []model.Item // last 3 completed
-	InProgItems []model.Item // current in-progress
+	Project      string
+	Open         int
+	InProgress   int
+	Blocked      int
+	Done         int
+	Canceled     int
+	Ready        int
+	RecentDone   []model.Item // last 3 completed
+	InProgItems  []model.Item // current in-progress
 	BlockedItems []model.Item // blocked with reasons
-	ReadyItems  []model.Item // ready for work
+	ReadyItems   []model.Item // ready for work
 }
 
 // ProjectStatus returns an aggregated status report for a project.
@@ -98,6 +99,8 @@ func (db *DB) ProjectStatus(project string) (*StatusReport, error) {
 			report.Blocked = count
 		case model.StatusDone:
 			report.Done = count
+		case model.StatusCanceled:
+			report.Canceled = count
 		}
 	}
 

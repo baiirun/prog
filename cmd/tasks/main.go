@@ -131,7 +131,7 @@ Examples:
 		if flagStatus != "" {
 			s := model.Status(flagStatus)
 			if !s.IsValid() {
-				return fmt.Errorf("invalid status: %s (valid: open, in_progress, blocked, done)", flagStatus)
+				return fmt.Errorf("invalid status: %s (valid: open, in_progress, blocked, done, canceled)", flagStatus)
 			}
 			status = &s
 		}
@@ -250,6 +250,44 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Completed %s\n", args[0])
+		return nil
+	},
+}
+
+var cancelCmd = &cobra.Command{
+	Use:   "cancel <id> [reason]",
+	Short: "Cancel a task without completing it",
+	Long: `Cancel a task that is no longer relevant.
+
+Use this instead of delete when you want to preserve the task history
+but close it without marking it as successfully completed.
+
+Example:
+  tasks cancel ts-a1b2c3
+  tasks cancel ts-a1b2c3 "Requirements changed, no longer needed"`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer database.Close()
+
+		id := args[0]
+
+		if err := database.UpdateStatus(id, model.StatusCanceled); err != nil {
+			return err
+		}
+
+		if len(args) > 1 {
+			reason := strings.Join(args[1:], " ")
+			if err := database.AddLog(id, "Canceled: "+reason); err != nil {
+				return err
+			}
+			fmt.Printf("Canceled %s: %s\n", id, reason)
+		} else {
+			fmt.Printf("Canceled %s\n", id)
+		}
 		return nil
 	},
 }
@@ -740,6 +778,7 @@ func init() {
 	rootCmd.AddCommand(showCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
+	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
@@ -816,8 +855,8 @@ func printStatusReport(report *db.StatusReport) {
 	}
 	fmt.Printf("Project: %s\n\n", project)
 
-	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d done (%d ready)\n\n",
-		report.Open, report.InProgress, report.Blocked, report.Done, report.Ready)
+	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d done, %d canceled (%d ready)\n\n",
+		report.Open, report.InProgress, report.Blocked, report.Done, report.Canceled, report.Ready)
 
 	if len(report.RecentDone) > 0 {
 		fmt.Println("Recently completed:")
@@ -938,6 +977,7 @@ to read its logs and understand current state before continuing.
 tasks start <id>          # Claim a task
 tasks log <id> "message"  # Log progress
 tasks done <id>           # Mark complete
+tasks cancel <id> "why"   # Cancel (close without completing)
 tasks block <id> "why"    # Mark blocked
 
 # Creating & organizing
@@ -949,8 +989,8 @@ tasks blocks <id> <other>       # id blocks other (other can't start until id do
 ## Current State`)
 
 	if report != nil {
-		fmt.Printf("\n%d open, %d in progress, %d blocked, %d done\n",
-			report.Open, report.InProgress, report.Blocked, report.Done)
+		fmt.Printf("\n%d open, %d in progress, %d blocked, %d done, %d canceled\n",
+			report.Open, report.InProgress, report.Blocked, report.Done, report.Canceled)
 
 		if len(report.InProgItems) > 0 {
 			fmt.Println("\nIn progress:")

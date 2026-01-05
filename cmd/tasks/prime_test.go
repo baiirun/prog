@@ -58,6 +58,7 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 		InProgress: 2,
 		Blocked:    1,
 		Done:       3,
+		Canceled:   1,
 		Ready:      4,
 		InProgItems: []model.Item{
 			{ID: "ts-111111", Title: "Working on this"},
@@ -106,6 +107,7 @@ func TestPrintPrimeContent_EmptyReport(t *testing.T) {
 		InProgress:   0,
 		Blocked:      0,
 		Done:         0,
+		Canceled:     0,
 		Ready:        0,
 		InProgItems:  []model.Item{},
 		BlockedItems: []model.Item{},
@@ -153,6 +155,7 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 		"tasks start",
 		"tasks log",
 		"tasks done",
+		"tasks cancel",
 		"tasks block",
 		"tasks add",
 	}

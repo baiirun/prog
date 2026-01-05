@@ -59,6 +59,7 @@ tasks done ts-a1b2c3
 |---------|-------------|
 | `tasks start <id>` | Set task to in_progress |
 | `tasks done <id>` | Mark task complete |
+| `tasks cancel <id> [reason]` | Cancel task (close without completing) |
 | `tasks block <id> <reason>` | Mark blocked with reason |
 | `tasks log <id> <message>` | Add timestamped log entry |
 | `tasks append <id> <text>` | Append to task description |
@@ -140,6 +141,9 @@ tasks append ts-d4e5f6 "Using bcrypt for password hashing"
 # Complete
 tasks done ts-d4e5f6
 
+# Or cancel if no longer needed
+tasks cancel ts-d4e5f6 "Requirements changed"
+
 # Or mark blocked for next agent
 tasks block ts-d4e5f6 "Need API spec for OAuth flow"
 
@@ -218,7 +222,7 @@ This ensures agents never forget the workflow, even after context compaction.
 ## Data Model
 
 - **Items**: Tasks or epics with title, description, status, priority
-- **Status**: `open` → `in_progress` → `done` (or `blocked`)
+- **Status**: `open` → `in_progress` → `done` (or `blocked`, `canceled`)
 - **Dependencies**: Task A can depend on Task B (A is blocked until B is done)
 - **Logs**: Timestamped audit trail per item
 - **Projects**: String tag to scope work (e.g., "gaia", "myapp")

@@ -1,0 +1,16 @@
+# Binary
+/tasks
+/cmd/tasks/tasks
+
+# Test
+*.test
+
+# OS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

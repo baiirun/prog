@@ -65,6 +65,7 @@ Database: ~/.world/tasks/tasks.db
 
 Quick start:
   tasks init
+  tasks onboard
   tasks add "Build feature X" -p myproject
   tasks ready -p myproject
   tasks start <id>

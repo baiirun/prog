@@ -98,7 +98,6 @@ tasks done ts-a1b2c3
 |---------|-------------|
 | `tasks parent <id> <epic-id>` | Set task's parent epic |
 | `tasks blocks <id> <other>` | Add blocking relationship (other blocked until id done) |
-| `tasks dep <id> --on <other>` | Add dependency (id blocked until other is done) |
 | `tasks graph` | Show dependency graph |
 | `tasks projects` | List all projects |
 | `tasks add -e <title>` | Create an epic instead of task |
@@ -198,8 +197,6 @@ tasks add "Build API" -p myproject --blocks ts-frontend
 
 # Or add blocking relationship to existing tasks
 tasks blocks ts-backend ts-frontend
-# Or equivalently:
-tasks dep ts-frontend --on ts-backend
 
 # View all dependencies
 tasks graph

@@ -33,14 +33,13 @@ type Hook struct {
 }
 
 var (
-	flagProject   string
-	flagStatus    string
-	flagEpic      bool
-	flagPriority  int
-	flagDependsOn string
-	flagForce     bool
-	flagParent    string
-	flagBlocks    string
+	flagProject  string
+	flagStatus   string
+	flagEpic     bool
+	flagPriority int
+	flagForce    bool
+	flagParent   string
+	flagBlocks   string
 )
 
 func openDB() (*db.DB, error) {
@@ -674,36 +673,6 @@ Example:
 	},
 }
 
-var depCmd = &cobra.Command{
-	Use:   "dep <id> --on <other>",
-	Short: "Add a dependency",
-	Long: `Add a dependency between tasks.
-
-The first task will be blocked until the dependency is done.
-
-Example:
-  tasks dep ts-a1b2c3 --on ts-d4e5f6
-  # ts-a1b2c3 is now blocked until ts-d4e5f6 is done`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if flagDependsOn == "" {
-			return fmt.Errorf("--on flag is required")
-		}
-
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer database.Close()
-
-		if err := database.AddDep(args[0], flagDependsOn); err != nil {
-			return err
-		}
-		fmt.Printf("%s now depends on %s\n", args[0], flagDependsOn)
-		return nil
-	},
-}
-
 var parentCmd = &cobra.Command{
 	Use:   "parent <id> <epic-id>",
 	Short: "Set a task's parent epic",
@@ -1070,9 +1039,6 @@ func init() {
 	// list flags
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done)")
 
-	// dep flags
-	depCmd.Flags().StringVar(&flagDependsOn, "on", "", "ID of the item this depends on")
-
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
 
@@ -1093,7 +1059,6 @@ func init() {
 	rootCmd.AddCommand(appendCmd)
 	rootCmd.AddCommand(descCmd)
 	rootCmd.AddCommand(editCmd)
-	rootCmd.AddCommand(depCmd)
 	rootCmd.AddCommand(parentCmd)
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(primeCmd)

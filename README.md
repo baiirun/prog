@@ -29,6 +29,15 @@ go build -o tasks ./cmd/tasks
 ./tasks --help
 ```
 
+Or install to your `$GOBIN`:
+
+```bash
+git clone https://github.com/baiirun/dotworld-tasks.git
+cd dotworld-tasks
+go install ./cmd/tasks
+tasks --help
+```
+
 ## Quick Start
 
 ```bash

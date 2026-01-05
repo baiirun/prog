@@ -11,11 +11,17 @@ This tool assumes you're using [Claude Code](https://docs.anthropic.com/en/docs/
 2. Run `tasks onboard` to see what it would configure
 3. Add the `tasks prime` output to your `AGENTS.md`, system prompt, or equivalent session-start mechanism
 
-## Prerequisites
-
-- Go 1.25 or later ([install Go](https://go.dev/doc/install))
-
 ## Install
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install baiirun/tap/tasks
+```
+
+### Go install
+
+Requires Go 1.25+.
 
 ```bash
 go install github.com/baiirun/dotworld-tasks/cmd/tasks@latest
@@ -23,16 +29,13 @@ go install github.com/baiirun/dotworld-tasks/cmd/tasks@latest
 
 ### Build from source
 
+Requires Go 1.25+.
+
 ```bash
 git clone https://github.com/baiirun/dotworld-tasks.git
 cd dotworld-tasks
 go build -o tasks ./cmd/tasks
-
-# Verify it works
 ./tasks --help
-
-# Install to your GOPATH/bin (optional)
-go install ./cmd/tasks
 ```
 
 ## Quick Start

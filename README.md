@@ -78,6 +78,7 @@ prog done ts-a1b2c3
 | `prog ready` | Show tasks ready for work (open + deps met) |
 | `prog status` | Project overview for agent spin-up |
 | `prog prime` | Output context for Claude Code hooks |
+| `prog tui` | Launch interactive terminal UI (alias: `prog ui`) |
 
 ### Work Commands
 
@@ -270,6 +271,51 @@ Running `prog onboard` adds this to your Claude Code settings (`.claude/settings
 - **Current State**: Live summary of open, in-progress, and blocked tasks
 
 This ensures agents never forget the workflow, even after context compaction.
+
+## Interactive TUI
+
+Launch with `prog tui` (or `prog ui`):
+
+```
+prog  12/47 items  status:oib
+
+◐ ts-234d9f  Set up Bubble Tea scaffold       [tasks]
+○ ts-9566cd  Task list view with indicators   [tasks]
+○ ts-f39592  Vim keybind navigation           [tasks]
+```
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| `j/k` or arrows | Move up/down |
+| `g/G` or Home/End | Jump to first/last |
+| `enter` or `l` | View task details |
+| `esc` or `h` | Go back to list |
+| `q` | Quit |
+
+### Actions
+
+| Key | Action |
+|-----|--------|
+| `s` | Start task |
+| `d` | Mark done |
+| `b` | Block (prompts for reason) |
+| `L` | Log progress (prompts for message) |
+| `c` | Cancel task |
+| `D` | Delete task |
+| `a` | Add dependency |
+| `r` | Refresh |
+
+### Filtering
+
+| Key | Action |
+|-----|--------|
+| `/` | Search by title/ID/description |
+| `p` | Filter by project (partial match) |
+| `1-5` | Toggle status: 1=open 2=in_progress 3=blocked 4=done 5=canceled |
+| `0` | Show all statuses |
+| `esc` | Clear filters |
 
 ## Data Model
 

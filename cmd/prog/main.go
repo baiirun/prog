@@ -1384,6 +1384,11 @@ prog list --has-blockers       # Tasks with unresolved deps
 prog list --no-blockers        # Tasks with no blockers
 prog ready -p myproject        # Ready tasks in a specific project
 
+# Interactive TUI
+prog tui                       # Launch interactive UI (alias: prog ui)
+                               # j/k:nav  s:start d:done b:block L:log
+                               # /:search p:project 1-5:status filter
+
 ## Current State`)
 
 	if report != nil {

@@ -672,9 +672,17 @@ func (m Model) listView() string {
 func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	icon := statusIcon(item.Status)
 
+	// Format: icon id [project] title
+	project := ""
+	projectWidth := 0
+	if item.Project != "" {
+		project = "[" + item.Project + "]"
+		projectWidth = len(project) + 1 // +1 for space after
+	}
+
 	// Calculate available space for title
-	// icon(1) + space(1) + id(9) + space(2) + project(~15) + padding = ~30
-	titleWidth := width - 30
+	// icon(1) + space(1) + id(9) + space(1) + project + space(1) = ~13 + project
+	titleWidth := width - 13 - projectWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -684,12 +692,10 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	project := ""
-	if item.Project != "" {
-		project = "[" + item.Project + "]"
+	if project != "" {
+		return fmt.Sprintf("%s %s %s %-*s", icon, item.ID, project, titleWidth, title)
 	}
-
-	return fmt.Sprintf("%s %s  %-*s %s", icon, item.ID, titleWidth, title, project)
+	return fmt.Sprintf("%s %s %-*s", icon, item.ID, titleWidth, title)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
@@ -700,8 +706,16 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 
 	id := dimStyle.Render(item.ID)
 
+	// Format: icon id [project] title
+	project := ""
+	projectWidth := 0
+	if item.Project != "" {
+		project = dimStyle.Render("[" + item.Project + "]")
+		projectWidth = len(item.Project) + 3 // brackets + space after
+	}
+
 	// Calculate available space for title
-	titleWidth := width - 30
+	titleWidth := width - 13 - projectWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -711,12 +725,10 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	project := ""
-	if item.Project != "" {
-		project = dimStyle.Render("[" + item.Project + "]")
+	if project != "" {
+		return fmt.Sprintf("%s %s %s %-*s", iconStyled, id, project, titleWidth, title)
 	}
-
-	return fmt.Sprintf("%s %s  %-*s %s", iconStyled, id, titleWidth, title, project)
+	return fmt.Sprintf("%s %s %-*s", iconStyled, id, titleWidth, title)
 }
 
 func (m Model) activeFiltersString() string {

@@ -281,10 +281,6 @@ This ensures agents never forget the workflow, even after context compaction.
 
 Database location: `~/.prog/prog.db`
 
-## Design
-
-See [DESIGN.md](DESIGN.md) for architecture and schema details.
-
 ## Goals
 
 1. Track tasks within larger work (epics)

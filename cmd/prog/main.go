@@ -67,6 +67,7 @@ var (
 	flagContextID        string
 	flagContextJSON      bool
 	flagLearnDetail      string
+	flagLabelsColor      string
 )
 
 func openDB() (*db.DB, error) {
@@ -1114,6 +1115,140 @@ Examples:
 	},
 }
 
+var labelsCmd = &cobra.Command{
+	Use:   "labels",
+	Short: "List or manage labels for a project",
+	Long: `List all labels for a project.
+
+Labels are tags for categorizing tasks (bug, feature, refactor, etc).
+Labels are project-scoped and identified by name.
+
+Examples:
+  prog labels -p myproject           # list all labels
+  prog labels add bug -p myproject   # create a label
+  prog labels rm bug -p myproject    # delete a label
+  prog labels rename bug critical -p myproject`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		labels, err := database.ListLabels(flagProject)
+		if err != nil {
+			return err
+		}
+
+		if len(labels) == 0 {
+			fmt.Println("No labels")
+			return nil
+		}
+
+		printLabelsTable(labels)
+		return nil
+	},
+}
+
+var labelsAddCmd = &cobra.Command{
+	Use:   "add <name>",
+	Short: "Create a new label",
+	Long: `Create a new label in a project.
+
+Labels are created on first use when attached to items, but you can
+also create them explicitly with this command.
+
+Examples:
+  prog labels add bug -p myproject
+  prog labels add urgent -p myproject --color "#ff0000"`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		now := time.Now()
+		label := &model.Label{
+			ID:        model.GenerateLabelID(),
+			Name:      args[0],
+			Project:   flagProject,
+			Color:     flagLabelsColor,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+
+		if err := database.CreateLabel(label); err != nil {
+			return err
+		}
+		fmt.Printf("Created label: %s\n", args[0])
+		return nil
+	},
+}
+
+var labelsRmCmd = &cobra.Command{
+	Use:   "rm <name>",
+	Short: "Delete a label",
+	Long: `Delete a label and remove it from all items.
+
+Example:
+  prog labels rm bug -p myproject`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.DeleteLabel(flagProject, args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted label: %s\n", args[0])
+		return nil
+	},
+}
+
+var labelsRenameCmd = &cobra.Command{
+	Use:   "rename <old-name> <new-name>",
+	Short: "Rename a label",
+	Long: `Rename a label. All items with this label will be updated.
+
+Example:
+  prog labels rename bug critical -p myproject`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.RenameLabel(flagProject, args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("Renamed label: %s -> %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 var contextCmd = &cobra.Command{
 	Use:   "context",
 	Short: "Retrieve learnings for context",
@@ -1800,6 +1935,14 @@ func init() {
 	conceptsCmd.Flags().StringVar(&flagConceptsRename, "rename", "", "Rename concept (requires concept name as argument)")
 	conceptsCmd.Flags().BoolVar(&flagConceptsStats, "stats", false, "Show statistics (count and oldest learning age)")
 
+	// labels flags
+	labelsAddCmd.Flags().StringVar(&flagLabelsColor, "color", "", "Label color (hex, e.g. #ff0000)")
+
+	// labels subcommands
+	labelsCmd.AddCommand(labelsAddCmd)
+	labelsCmd.AddCommand(labelsRmCmd)
+	labelsCmd.AddCommand(labelsRenameCmd)
+
 	// context flags
 	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
 	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
@@ -1833,6 +1976,7 @@ func init() {
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(learnCmd)
 	rootCmd.AddCommand(conceptsCmd)
+	rootCmd.AddCommand(labelsCmd)
 	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(compactCmd)
@@ -2005,6 +2149,18 @@ func formatDurationShort(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return "<1h"
+}
+
+func printLabelsTable(labels []model.Label) {
+	fmt.Printf("%-20s  %-12s  %s\n", "NAME", "CREATED", "COLOR")
+	for _, l := range labels {
+		ago := formatTimeAgo(l.CreatedAt)
+		color := l.Color
+		if color == "" {
+			color = "-"
+		}
+		fmt.Printf("%-20s  %-12s  %s\n", l.Name, ago, color)
+	}
 }
 
 func printLearnings(learnings []model.Learning) {

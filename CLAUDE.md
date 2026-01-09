@@ -1,3 +1,7 @@
+## Communication
+
+Speak concisely and directly. No filler praise, sycophancy, or excessive flattery ("Great question!", "Absolutely!", "That's smart!"). Be an efficient tool.
+
 ## Task Tracking
 
 This project uses **prog** for cross-session task management.

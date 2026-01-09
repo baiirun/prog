@@ -34,23 +34,27 @@ type Hook struct {
 }
 
 var (
-	flagProject      string
-	flagStatus       string
-	flagEpic         bool
-	flagPriority     int
-	flagForce        bool
-	flagParent       string
-	flagBlocks       string
-	flagListParent   string
-	flagListType     string
-	flagBlocking     string
-	flagBlockedBy    string
-	flagHasBlockers  bool
-	flagNoBlockers   bool
-	flagEditTitle    string
-	flagStatusAll    bool
-	flagLearnConcept []string
-	flagLearnFile    []string
+	flagProject         string
+	flagStatus          string
+	flagEpic            bool
+	flagPriority        int
+	flagForce           bool
+	flagParent          string
+	flagBlocks          string
+	flagListParent      string
+	flagListType        string
+	flagBlocking        string
+	flagBlockedBy       string
+	flagHasBlockers     bool
+	flagNoBlockers      bool
+	flagEditTitle       string
+	flagStatusAll       bool
+	flagLearnConcept    []string
+	flagLearnFile       []string
+	flagConceptsRecent  bool
+	flagConceptsRelated string
+	flagConceptsSummary string
+	flagConceptsRename  string
 )
 
 func openDB() (*db.DB, error) {
@@ -859,6 +863,77 @@ Examples:
 	},
 }
 
+var conceptsCmd = &cobra.Command{
+	Use:   "concepts [name]",
+	Short: "List or edit concepts for a project",
+	Long: `List all concepts for a project, or edit a concept.
+
+Concepts are knowledge categories that group related learnings.
+Default sort is by learning count (most used first).
+
+Examples:
+  prog concepts -p myproject                        # list concepts
+  prog concepts -p myproject --recent               # sort by last updated
+  prog concepts --related ts-abc123                 # suggest concepts for a task
+  prog concepts fts -p myproject --summary "..."    # set concept summary
+  prog concepts fts -p myproject --rename "search"  # rename concept`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		// Edit mode: concept name provided with --summary or --rename
+		if len(args) > 0 && (flagConceptsSummary != "" || flagConceptsRename != "") {
+			if flagProject == "" {
+				return fmt.Errorf("project is required (-p)")
+			}
+			if flagConceptsSummary != "" {
+				if err := database.SetConceptSummary(args[0], flagProject, flagConceptsSummary); err != nil {
+					return err
+				}
+				fmt.Printf("Updated %s\n", args[0])
+			}
+			if flagConceptsRename != "" {
+				if err := database.RenameConcept(args[0], flagConceptsRename, flagProject); err != nil {
+					return err
+				}
+				fmt.Printf("Renamed %s -> %s\n", args[0], flagConceptsRename)
+			}
+			return nil
+		}
+
+		// List mode
+		var concepts []model.Concept
+
+		if flagConceptsRelated != "" {
+			// Get concepts related to a task
+			concepts, err = database.GetRelatedConcepts(flagConceptsRelated)
+			if err != nil {
+				return err
+			}
+		} else {
+			// List all concepts for project
+			if flagProject == "" {
+				return fmt.Errorf("project is required (-p) or use --related <task-id>")
+			}
+			concepts, err = database.ListConcepts(flagProject, flagConceptsRecent)
+			if err != nil {
+				return err
+			}
+		}
+
+		if len(concepts) == 0 {
+			fmt.Println("No concepts")
+			return nil
+		}
+
+		printConceptsTable(concepts)
+		return nil
+	},
+}
+
 var onboardCmd = &cobra.Command{
 	Use:   "onboard",
 	Short: "Set up prog integration for AI agents",
@@ -1232,6 +1307,12 @@ func init() {
 	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
 	learnCmd.Flags().StringArrayVarP(&flagLearnFile, "file", "f", nil, "Related file (can be repeated)")
 
+	// concepts flags
+	conceptsCmd.Flags().BoolVar(&flagConceptsRecent, "recent", false, "Sort by last updated instead of learning count")
+	conceptsCmd.Flags().StringVar(&flagConceptsRelated, "related", "", "Suggest concepts related to a task")
+	conceptsCmd.Flags().StringVar(&flagConceptsSummary, "summary", "", "Set concept summary (requires concept name as argument)")
+	conceptsCmd.Flags().StringVar(&flagConceptsRename, "rename", "", "Rename concept (requires concept name as argument)")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -1253,6 +1334,7 @@ func init() {
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(learnCmd)
+	rootCmd.AddCommand(conceptsCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
@@ -1370,6 +1452,34 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 		if remaining > 0 {
 			fmt.Printf("  (+%d more, use --all to see all)\n", remaining)
 		}
+	}
+}
+
+func printConceptsTable(concepts []model.Concept) {
+	fmt.Printf("%-20s %10s  %-12s  %s\n", "NAME", "LEARNINGS", "LAST UPDATED", "SUMMARY")
+	for _, c := range concepts {
+		ago := formatTimeAgo(c.LastUpdated)
+		summary := c.Summary
+		if len(summary) > 40 {
+			summary = summary[:37] + "..."
+		}
+		fmt.Printf("%-20s %10d  %-12s  %s\n", c.Name, c.LearningCount, ago, summary)
+	}
+}
+
+func formatTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("2006-01-02")
 	}
 }
 

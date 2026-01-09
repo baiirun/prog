@@ -48,11 +48,12 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE TABLE IF NOT EXISTS concepts (
+	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
 	project TEXT NOT NULL,
 	summary TEXT,
 	last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
-	PRIMARY KEY (name, project)
+	UNIQUE (name, project)
 );
 
 CREATE TABLE IF NOT EXISTS learnings (
@@ -69,10 +70,8 @@ CREATE TABLE IF NOT EXISTS learnings (
 
 CREATE TABLE IF NOT EXISTS learning_concepts (
 	learning_id TEXT REFERENCES learnings(id),
-	concept TEXT NOT NULL,
-	project TEXT NOT NULL,
-	PRIMARY KEY (learning_id, concept, project),
-	FOREIGN KEY (concept, project) REFERENCES concepts(name, project)
+	concept_id TEXT REFERENCES concepts(id),
+	PRIMARY KEY (learning_id, concept_id)
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
@@ -106,7 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_item ON logs(item_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_project ON learnings(project);
 CREATE INDEX IF NOT EXISTS idx_learnings_task ON learnings(task_id);
 CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
-CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept, project);
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept_id);
 `
 
 // DB wraps a SQL database connection with task-specific operations.

@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
@@ -38,21 +39,32 @@ func (db *DB) CreateLearning(l *model.Learning) error {
 
 	// Ensure concepts exist and create associations
 	for _, conceptName := range l.Concepts {
-		// Insert or update concept
-		_, err = tx.Exec(`
-			INSERT INTO concepts (name, project, last_updated)
-			VALUES (?, ?, ?)
-			ON CONFLICT (name, project) DO UPDATE SET last_updated = excluded.last_updated
-		`, conceptName, l.Project, l.UpdatedAt)
+		// Check if concept exists
+		var conceptID string
+		err = tx.QueryRow(`SELECT id FROM concepts WHERE name = ? AND project = ?`, conceptName, l.Project).Scan(&conceptID)
 		if err != nil {
-			return fmt.Errorf("failed to upsert concept %q: %w", conceptName, err)
+			// Concept doesn't exist, create it
+			conceptID = model.GenerateConceptID()
+			_, err = tx.Exec(`
+				INSERT INTO concepts (id, name, project, last_updated)
+				VALUES (?, ?, ?, ?)
+			`, conceptID, conceptName, l.Project, l.UpdatedAt)
+			if err != nil {
+				return fmt.Errorf("failed to create concept %q: %w", conceptName, err)
+			}
+		} else {
+			// Update last_updated
+			_, err = tx.Exec(`UPDATE concepts SET last_updated = ? WHERE id = ?`, l.UpdatedAt, conceptID)
+			if err != nil {
+				return fmt.Errorf("failed to update concept %q: %w", conceptName, err)
+			}
 		}
 
 		// Create association
 		_, err = tx.Exec(`
-			INSERT INTO learning_concepts (learning_id, concept, project)
-			VALUES (?, ?, ?)
-		`, l.ID, conceptName, l.Project)
+			INSERT INTO learning_concepts (learning_id, concept_id)
+			VALUES (?, ?)
+		`, l.ID, conceptID)
 		if err != nil {
 			return fmt.Errorf("failed to create concept association: %w", err)
 		}
@@ -89,7 +101,9 @@ func (db *DB) GetLearning(id string) (*model.Learning, error) {
 
 	// Get associated concepts
 	rows, err := db.Query(`
-		SELECT concept FROM learning_concepts WHERE learning_id = ?
+		SELECT c.name FROM learning_concepts lc
+		JOIN concepts c ON c.id = lc.concept_id
+		WHERE lc.learning_id = ?
 	`, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get concepts: %w", err)
@@ -123,15 +137,19 @@ func (db *DB) GetCurrentTaskID(project string) (*string, error) {
 	return &taskID, nil
 }
 
-// ListConcepts returns all concepts for a project.
-func (db *DB) ListConcepts(project string) ([]model.Concept, error) {
+// ListConcepts returns all concepts for a project, sorted by learning count (most used first).
+func (db *DB) ListConcepts(project string, sortByRecent bool) ([]model.Concept, error) {
+	orderBy := "count DESC, c.name"
+	if sortByRecent {
+		orderBy = "c.last_updated DESC, c.name"
+	}
+
 	rows, err := db.Query(`
-		SELECT c.name, c.project, c.summary, c.last_updated,
-			(SELECT COUNT(*) FROM learning_concepts lc WHERE lc.concept = c.name AND lc.project = c.project) as count
+		SELECT c.id, c.name, c.project, c.summary, c.last_updated,
+			(SELECT COUNT(*) FROM learning_concepts lc WHERE lc.concept_id = c.id) as count
 		FROM concepts c
 		WHERE c.project = ?
-		ORDER BY count DESC, c.name
-	`, project)
+		ORDER BY `+orderBy, project)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list concepts: %w", err)
 	}
@@ -141,8 +159,7 @@ func (db *DB) ListConcepts(project string) ([]model.Concept, error) {
 	for rows.Next() {
 		var c model.Concept
 		var summary *string
-		var count int
-		if err := rows.Scan(&c.Name, &c.Project, &summary, &c.LastUpdated, &count); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Project, &summary, &c.LastUpdated, &c.LearningCount); err != nil {
 			return nil, fmt.Errorf("failed to scan concept: %w", err)
 		}
 		if summary != nil {
@@ -157,9 +174,74 @@ func (db *DB) ListConcepts(project string) ([]model.Concept, error) {
 // EnsureConcept creates a concept if it doesn't exist.
 func (db *DB) EnsureConcept(name, project string) error {
 	_, err := db.Exec(`
-		INSERT INTO concepts (name, project, last_updated)
-		VALUES (?, ?, ?)
+		INSERT INTO concepts (id, name, project, last_updated)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (name, project) DO NOTHING
-	`, name, project, time.Now())
+	`, model.GenerateConceptID(), name, project, time.Now())
 	return err
+}
+
+// SetConceptSummary updates a concept's summary.
+func (db *DB) SetConceptSummary(name, project, summary string) error {
+	result, err := db.Exec(`
+		UPDATE concepts SET summary = ?, last_updated = ?
+		WHERE name = ? AND project = ?
+	`, summary, time.Now(), name, project)
+	if err != nil {
+		return fmt.Errorf("failed to update concept: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("concept not found: %s", name)
+	}
+	return nil
+}
+
+// RenameConcept changes a concept's name.
+func (db *DB) RenameConcept(oldName, newName, project string) error {
+	result, err := db.Exec(`
+		UPDATE concepts SET name = ?, last_updated = ?
+		WHERE name = ? AND project = ?
+	`, newName, time.Now(), oldName, project)
+	if err != nil {
+		return fmt.Errorf("failed to rename concept: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("concept not found: %s", oldName)
+	}
+	return nil
+}
+
+// GetRelatedConcepts returns concepts that match keywords in a task's title/description.
+// Matches are case-insensitive and ranked by learning count.
+func (db *DB) GetRelatedConcepts(taskID string) ([]model.Concept, error) {
+	// Get task details
+	item, err := db.GetItem(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get all concepts for this project
+	concepts, err := db.ListConcepts(item.Project, false)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(concepts) == 0 {
+		return nil, nil
+	}
+
+	// Build search text from title and description
+	searchText := strings.ToLower(item.Title + " " + item.Description)
+
+	// Filter concepts whose name appears in the search text
+	var related []model.Concept
+	for _, c := range concepts {
+		if strings.Contains(searchText, strings.ToLower(c.Name)) {
+			related = append(related, c)
+		}
+	}
+
+	return related, nil
 }

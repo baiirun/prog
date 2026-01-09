@@ -101,10 +101,12 @@ func (s LearningStatus) IsValid() bool {
 
 // Concept represents a knowledge category within a project.
 type Concept struct {
-	Name        string
-	Project     string
-	Summary     string
-	LastUpdated time.Time
+	ID            string // con-XXXXXX
+	Name          string
+	Project       string
+	Summary       string
+	LastUpdated   time.Time
+	LearningCount int // Derived from learning_concepts join
 }
 
 // Learning represents a piece of knowledge discovered during work.
@@ -128,4 +130,13 @@ func GenerateLearningID() string {
 		panic("crypto/rand failed: " + err.Error())
 	}
 	return "lrn-" + hex.EncodeToString(b)
+}
+
+// GenerateConceptID returns a new concept ID with con- prefix and 6 hex chars.
+func GenerateConceptID() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "con-" + hex.EncodeToString(b)
 }

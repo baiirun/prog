@@ -57,6 +57,9 @@ var (
 	flagConceptsRelated  string
 	flagConceptsSummary  string
 	flagConceptsRename   string
+	flagContextConcept   []string
+	flagContextQuery     string
+	flagContextStale     bool
 )
 
 func openDB() (*db.DB, error) {
@@ -1016,6 +1019,52 @@ Examples:
 	},
 }
 
+var contextCmd = &cobra.Command{
+	Use:   "context",
+	Short: "Retrieve learnings for context",
+	Long: `Retrieve learnings by concept or full-text search.
+
+Use this to load relevant context before starting work on a task.
+
+Examples:
+  prog context -c auth -c concurrency -p myproject   # by concepts
+  prog context -q "rate limit" -p myproject          # full-text search
+  prog context -c auth --include-stale -p myproject  # include stale learnings`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+		if len(flagContextConcept) == 0 && flagContextQuery == "" {
+			return fmt.Errorf("specify concepts (-c) or query (-q)")
+		}
+
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		var learnings []model.Learning
+
+		if len(flagContextConcept) > 0 {
+			learnings, err = database.GetLearningsByConcepts(flagProject, flagContextConcept, flagContextStale)
+		} else {
+			learnings, err = database.SearchLearnings(flagProject, flagContextQuery, flagContextStale)
+		}
+		if err != nil {
+			return err
+		}
+
+		if len(learnings) == 0 {
+			fmt.Println("No learnings found")
+			return nil
+		}
+
+		printLearnings(learnings)
+		return nil
+	},
+}
+
 var onboardCmd = &cobra.Command{
 	Use:   "onboard",
 	Short: "Set up prog integration for AI agents",
@@ -1406,6 +1455,11 @@ func init() {
 	conceptsCmd.Flags().StringVar(&flagConceptsSummary, "summary", "", "Set concept summary (requires concept name as argument)")
 	conceptsCmd.Flags().StringVar(&flagConceptsRename, "rename", "", "Rename concept (requires concept name as argument)")
 
+	// context flags
+	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
+	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
+	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -1428,6 +1482,7 @@ func init() {
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(learnCmd)
 	rootCmd.AddCommand(conceptsCmd)
+	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(primeCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
@@ -1557,6 +1612,40 @@ func printConceptsTable(concepts []model.Concept) {
 			summary = summary[:37] + "..."
 		}
 		fmt.Printf("%-20s %10d  %-12s  %s\n", c.Name, c.LearningCount, ago, summary)
+	}
+}
+
+func printLearnings(learnings []model.Learning) {
+	for i, l := range learnings {
+		if i > 0 {
+			fmt.Println()
+		}
+
+		// Header with ID, status, and age
+		status := ""
+		if l.Status == model.LearningStatusStale {
+			status = " [stale]"
+		}
+		fmt.Printf("## %s%s (%s)\n", l.ID, status, formatTimeAgo(l.CreatedAt))
+
+		// Summary
+		fmt.Println(l.Summary)
+
+		// Detail if present
+		if l.Detail != "" {
+			fmt.Printf("\n%s\n", l.Detail)
+		}
+
+		// Metadata
+		if len(l.Concepts) > 0 {
+			fmt.Printf("\nConcepts: %s\n", strings.Join(l.Concepts, ", "))
+		}
+		if len(l.Files) > 0 {
+			fmt.Printf("Files: %s\n", strings.Join(l.Files, ", "))
+		}
+		if l.TaskID != nil {
+			fmt.Printf("Task: %s\n", *l.TaskID)
+		}
 	}
 }
 

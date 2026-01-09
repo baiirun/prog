@@ -728,3 +728,279 @@ func TestGetCurrentTaskID(t *testing.T) {
 		t.Errorf("taskID = %q, want %q", *taskID, task.ID)
 	}
 }
+
+// --- Context Retrieval ---
+
+func TestGetLearningsByConcepts(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create learnings with different concepts
+	learning1 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Auth learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning1); err != nil {
+		t.Fatalf("failed to create learning1: %v", err)
+	}
+
+	learning2 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(time.Second),
+		UpdatedAt: now.Add(time.Second),
+		Summary:   "Concurrency learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"concurrency"},
+	}
+	if err := db.CreateLearning(learning2); err != nil {
+		t.Fatalf("failed to create learning2: %v", err)
+	}
+
+	learning3 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now.Add(2 * time.Second),
+		UpdatedAt: now.Add(2 * time.Second),
+		Summary:   "Auth and concurrency learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth", "concurrency"},
+	}
+	if err := db.CreateLearning(learning3); err != nil {
+		t.Fatalf("failed to create learning3: %v", err)
+	}
+
+	// Query by single concept
+	learnings, err := db.GetLearningsByConcepts("test", []string{"auth"}, false)
+	if err != nil {
+		t.Fatalf("failed to get learnings by concepts: %v", err)
+	}
+	if len(learnings) != 2 {
+		t.Errorf("learnings count = %d, want 2", len(learnings))
+	}
+
+	// Query by multiple concepts (union)
+	learnings, err = db.GetLearningsByConcepts("test", []string{"auth", "concurrency"}, false)
+	if err != nil {
+		t.Fatalf("failed to get learnings: %v", err)
+	}
+	if len(learnings) != 3 {
+		t.Errorf("learnings count = %d, want 3", len(learnings))
+	}
+
+	// Results should be sorted by created_at desc (most recent first)
+	if learnings[0].ID != learning3.ID {
+		t.Errorf("first learning = %s, want %s (most recent)", learnings[0].ID, learning3.ID)
+	}
+}
+
+func TestGetLearningsByConcepts_ExcludesStale(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create active learning
+	learning1 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Active learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning1); err != nil {
+		t.Fatalf("failed to create learning1: %v", err)
+	}
+
+	// Create stale learning
+	learning2 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Stale learning",
+		Status:    model.LearningStatusStale,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning2); err != nil {
+		t.Fatalf("failed to create learning2: %v", err)
+	}
+
+	// Without include-stale, should only get active
+	learnings, err := db.GetLearningsByConcepts("test", []string{"auth"}, false)
+	if err != nil {
+		t.Fatalf("failed to get learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Errorf("learnings count = %d, want 1", len(learnings))
+	}
+	if learnings[0].Status != model.LearningStatusActive {
+		t.Errorf("status = %q, want active", learnings[0].Status)
+	}
+
+	// With include-stale, should get both
+	learnings, err = db.GetLearningsByConcepts("test", []string{"auth"}, true)
+	if err != nil {
+		t.Fatalf("failed to get learnings: %v", err)
+	}
+	if len(learnings) != 2 {
+		t.Errorf("learnings count = %d, want 2", len(learnings))
+	}
+}
+
+func TestGetLearningsByConcepts_Empty(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Empty concept list
+	learnings, err := db.GetLearningsByConcepts("test", []string{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if learnings != nil {
+		t.Errorf("expected nil, got %v", learnings)
+	}
+
+	// Nonexistent concept
+	learnings, err = db.GetLearningsByConcepts("test", []string{"nonexistent"}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(learnings) != 0 {
+		t.Errorf("learnings count = %d, want 0", len(learnings))
+	}
+}
+
+func TestSearchLearnings(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create learnings with searchable content
+	learning1 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Token refresh has race condition",
+		Detail:    "The auth token refresh logic has a race condition when multiple requests happen simultaneously",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning1); err != nil {
+		t.Fatalf("failed to create learning1: %v", err)
+	}
+
+	learning2 := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Database connection pooling",
+		Detail:    "Connection pool size affects throughput under load",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"database"},
+	}
+	if err := db.CreateLearning(learning2); err != nil {
+		t.Fatalf("failed to create learning2: %v", err)
+	}
+
+	// Search for "token"
+	learnings, err := db.SearchLearnings("test", "token", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Errorf("learnings count = %d, want 1", len(learnings))
+	}
+	if learnings[0].ID != learning1.ID {
+		t.Errorf("learning ID = %s, want %s", learnings[0].ID, learning1.ID)
+	}
+
+	// Search for "race condition"
+	learnings, err = db.SearchLearnings("test", "race condition", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Errorf("learnings count = %d, want 1", len(learnings))
+	}
+
+	// Search for "connection" (in second learning)
+	learnings, err = db.SearchLearnings("test", "connection", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Errorf("learnings count = %d, want 1", len(learnings))
+	}
+	if learnings[0].ID != learning2.ID {
+		t.Errorf("learning ID = %s, want %s", learnings[0].ID, learning2.ID)
+	}
+}
+
+func TestSearchLearnings_ExcludesStale(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	// Create stale learning
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Stale token info",
+		Status:    model.LearningStatusStale,
+		Concepts:  []string{"auth"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	// Without include-stale, should not find
+	learnings, err := db.SearchLearnings("test", "token", false)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(learnings) != 0 {
+		t.Errorf("learnings count = %d, want 0", len(learnings))
+	}
+
+	// With include-stale, should find
+	learnings, err = db.SearchLearnings("test", "token", true)
+	if err != nil {
+		t.Fatalf("failed to search learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Errorf("learnings count = %d, want 1", len(learnings))
+	}
+}
+
+func TestSearchLearnings_NoResults(t *testing.T) {
+	db := setupTestDB(t)
+
+	now := time.Now()
+	learning := &model.Learning{
+		ID:        model.GenerateLearningID(),
+		Project:   "test",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Summary:   "Some learning",
+		Status:    model.LearningStatusActive,
+		Concepts:  []string{"test"},
+	}
+	if err := db.CreateLearning(learning); err != nil {
+		t.Fatalf("failed to create learning: %v", err)
+	}
+
+	learnings, err := db.SearchLearnings("test", "nonexistent query", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(learnings) != 0 {
+		t.Errorf("learnings count = %d, want 0", len(learnings))
+	}
+}

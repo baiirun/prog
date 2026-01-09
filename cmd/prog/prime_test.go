@@ -30,7 +30,7 @@ func captureOutput(f func()) string {
 
 func TestPrintPrimeContent_NilReport(t *testing.T) {
 	output := captureOutput(func() {
-		printPrimeContent(nil)
+		printPrimeContent(nil, nil)
 	})
 
 	// Should contain core sections
@@ -69,7 +69,7 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 	}
 
 	output := captureOutput(func() {
-		printPrimeContent(report)
+		printPrimeContent(report, nil)
 	})
 
 	// Should contain status counts
@@ -114,7 +114,7 @@ func TestPrintPrimeContent_EmptyReport(t *testing.T) {
 	}
 
 	output := captureOutput(func() {
-		printPrimeContent(report)
+		printPrimeContent(report, nil)
 	})
 
 	// Should contain zeroes
@@ -130,7 +130,7 @@ func TestPrintPrimeContent_EmptyReport(t *testing.T) {
 
 func TestPrintPrimeContent_MandatoryLanguage(t *testing.T) {
 	output := captureOutput(func() {
-		printPrimeContent(nil)
+		printPrimeContent(nil, nil)
 	})
 
 	// Should contain strong MUST/NEVER language
@@ -144,7 +144,7 @@ func TestPrintPrimeContent_MandatoryLanguage(t *testing.T) {
 
 func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 	output := captureOutput(func() {
-		printPrimeContent(nil)
+		printPrimeContent(nil, nil)
 	})
 
 	// Should contain key commands
@@ -172,7 +172,7 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 
 func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
 	output := captureOutput(func() {
-		printPrimeContent(nil)
+		printPrimeContent(nil, nil)
 	})
 
 	// Should contain Starting Work section
@@ -233,7 +233,7 @@ func TestPrimeCommand_Integration(t *testing.T) {
 	}
 
 	output := captureOutput(func() {
-		printPrimeContent(report)
+		printPrimeContent(report, nil)
 	})
 
 	// Should contain the test task

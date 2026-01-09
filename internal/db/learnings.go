@@ -441,9 +441,9 @@ func (db *DB) SearchLearnings(project string, query string, includeStale bool) (
 
 // ConceptStats holds statistics for a concept.
 type ConceptStats struct {
-	Name         string
+	Name          string
 	LearningCount int
-	OldestAge    *time.Duration // nil if no learnings
+	OldestAge     *time.Duration // nil if no learnings
 }
 
 // ListConceptsWithStats returns all concepts with learning count and oldest learning age.
@@ -493,6 +493,72 @@ func (db *DB) ListConceptsWithStats(project string) ([]ConceptStats, error) {
 	}
 
 	return stats, nil
+}
+
+// GetAllLearnings returns all learnings for a project, sorted by created_at desc.
+// Only returns active learnings by default.
+func (db *DB) GetAllLearnings(project string, includeStale bool) ([]model.Learning, error) {
+	statusFilter := "AND l.status = 'active'"
+	if includeStale {
+		statusFilter = "AND l.status IN ('active', 'stale')"
+	}
+
+	query := `
+		SELECT l.id, l.project, l.created_at, l.updated_at, l.task_id,
+			l.summary, l.detail, l.files, l.status
+		FROM learnings l
+		WHERE l.project = ?
+		` + statusFilter + `
+		ORDER BY l.created_at DESC
+	`
+
+	rows, err := db.Query(query, project)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query learnings: %w", err)
+	}
+	defer rows.Close()
+
+	var learnings []model.Learning
+	for rows.Next() {
+		var l model.Learning
+		var filesJSON string
+		var taskID *string
+		if err := rows.Scan(&l.ID, &l.Project, &l.CreatedAt, &l.UpdatedAt, &taskID,
+			&l.Summary, &l.Detail, &filesJSON, &l.Status); err != nil {
+			return nil, fmt.Errorf("failed to scan learning: %w", err)
+		}
+		l.TaskID = taskID
+
+		// Parse files JSON
+		if filesJSON != "" && filesJSON != "[]" {
+			if err := json.Unmarshal([]byte(filesJSON), &l.Files); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal files: %w", err)
+			}
+		}
+
+		// Get associated concepts
+		conceptRows, err := db.Query(`
+			SELECT c.name FROM learning_concepts lc
+			JOIN concepts c ON c.id = lc.concept_id
+			WHERE lc.learning_id = ?
+		`, l.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get concepts: %w", err)
+		}
+		for conceptRows.Next() {
+			var concept string
+			if err := conceptRows.Scan(&concept); err != nil {
+				conceptRows.Close()
+				return nil, fmt.Errorf("failed to scan concept: %w", err)
+			}
+			l.Concepts = append(l.Concepts, concept)
+		}
+		conceptRows.Close()
+
+		learnings = append(learnings, l)
+	}
+
+	return learnings, nil
 }
 
 // GetRelatedConcepts returns concepts that match keywords in a task's title/description.

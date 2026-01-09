@@ -1101,6 +1101,7 @@ var contextCmd = &cobra.Command{
 Use this to load relevant context before starting work on a task.
 
 Examples:
+  prog context -p myproject --summary                # all learnings, grouped by concept
   prog context -c auth -c concurrency -p myproject   # by concepts
   prog context -q "rate limit" -p myproject          # full-text search
   prog context -c auth --summary -p myproject        # one-liner per learning
@@ -1127,12 +1128,44 @@ Examples:
 			return nil
 		}
 
-		// Modes 2 & 3 require project
+		// All other modes require project
 		if flagProject == "" {
 			return fmt.Errorf("project is required (-p) or use --id")
 		}
+
+		// Mode 2: All learnings with --summary (no concepts/query required)
+		if flagContextSummary && len(flagContextConcept) == 0 && flagContextQuery == "" {
+			learnings, err := database.GetAllLearnings(flagProject, flagContextStale)
+			if err != nil {
+				return err
+			}
+
+			if len(learnings) == 0 {
+				if flagContextJSON {
+					fmt.Println("[]")
+					return nil
+				}
+				fmt.Println("No learnings found")
+				return nil
+			}
+
+			if flagContextJSON {
+				return printLearningsJSON(learnings)
+			}
+
+			// Get concept summaries for grouped output
+			concepts, _ := database.ListConcepts(flagProject, false)
+			conceptMap := make(map[string]string)
+			for _, c := range concepts {
+				conceptMap[c.Name] = c.Summary
+			}
+			printAllLearningSummaries(learnings, conceptMap)
+			return nil
+		}
+
+		// Modes 3 & 4 require concepts or query
 		if len(flagContextConcept) == 0 && flagContextQuery == "" {
-			return fmt.Errorf("specify concepts (-c), query (-q), or --id")
+			return fmt.Errorf("specify concepts (-c), query (-q), or use --summary for all")
 		}
 
 		var learnings []model.Learning
@@ -1160,7 +1193,7 @@ Examples:
 			return printLearningsJSON(learnings)
 		}
 
-		// Mode 2: Summary mode (one-liners)
+		// Mode 3: Summary mode (one-liners) for specific concepts
 		if flagContextSummary {
 			// Get concept summaries for header
 			concepts, _ := database.ListConcepts(flagProject, false)
@@ -1172,7 +1205,7 @@ Examples:
 			return nil
 		}
 
-		// Mode 3: Full output
+		// Mode 4: Full output
 		printLearnings(learnings)
 		return nil
 	},
@@ -1466,13 +1499,62 @@ Example hook configuration in Claude Code settings:
 		database, err := openDB()
 		if err != nil {
 			// Still output prime content even if DB fails
-			printPrimeContent(nil)
+			printPrimeContent(nil, nil)
 			return nil
 		}
 		defer func() { _ = database.Close() }()
 
 		report, _ := database.ProjectStatus("")
-		printPrimeContent(report)
+
+		// Get all projects to check compaction candidates
+		projects, _ := database.ListProjects()
+		var allStats []db.ConceptStats
+		for _, p := range projects {
+			stats, _ := database.ListConceptsWithStats(p)
+			allStats = append(allStats, stats...)
+		}
+
+		printPrimeContent(report, allStats)
+		return nil
+	},
+}
+
+var compactCmd = &cobra.Command{
+	Use:   "compact",
+	Short: "Output compaction workflow guidance for agents",
+	Long: `Output guidance for grooming learnings and concepts.
+
+Use this when learnings have accumulated and need review.
+Covers identifying redundancy, staleness, and quality issues.
+
+The workflow uses two phases:
+1. Discovery: Scan summaries to identify grooming candidates
+2. Selection: Load detail for candidates, groom, repeat
+
+Example:
+  prog compact              # Output compaction guidance
+  prog compact -p myproject # Include project-specific stats`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			printCompactContent(nil)
+			return nil
+		}
+		defer func() { _ = database.Close() }()
+
+		var stats []db.ConceptStats
+		if flagProject != "" {
+			stats, _ = database.ListConceptsWithStats(flagProject)
+		} else {
+			// Get stats across all projects
+			projects, _ := database.ListProjects()
+			for _, p := range projects {
+				pStats, _ := database.ListConceptsWithStats(p)
+				stats = append(stats, pStats...)
+			}
+		}
+
+		printCompactContent(stats)
 		return nil
 	},
 }
@@ -1603,6 +1685,7 @@ func init() {
 	rootCmd.AddCommand(conceptsCmd)
 	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(primeCmd)
+	rootCmd.AddCommand(compactCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
 }
@@ -1864,6 +1947,49 @@ func printLearningSummaries(learnings []model.Learning, requestedConcepts []stri
 	}
 }
 
+func printAllLearningSummaries(learnings []model.Learning, conceptSummaries map[string]string) {
+	// Group learnings by concept
+	type conceptGroup struct {
+		summary   string
+		learnings []model.Learning
+	}
+	groups := make(map[string]*conceptGroup)
+	conceptOrder := []string{}
+
+	for _, l := range learnings {
+		for _, conceptName := range l.Concepts {
+			if groups[conceptName] == nil {
+				groups[conceptName] = &conceptGroup{
+					summary: conceptSummaries[conceptName],
+				}
+				conceptOrder = append(conceptOrder, conceptName)
+			}
+			groups[conceptName].learnings = append(groups[conceptName].learnings, l)
+		}
+	}
+
+	// Print grouped by concept
+	for i, conceptName := range conceptOrder {
+		if i > 0 {
+			fmt.Println()
+		}
+		group := groups[conceptName]
+		summary := group.summary
+		if summary == "" {
+			summary = "(no summary)"
+		}
+		fmt.Printf("%s: %s\n", conceptName, summary)
+
+		for _, l := range group.learnings {
+			status := ""
+			if l.Status == model.LearningStatusStale {
+				status = " [stale]"
+			}
+			fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
+		}
+	}
+}
+
 func formatTimeAgo(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -1911,7 +2037,7 @@ func printDepGraph(edges []db.DepEdge) {
 	}
 }
 
-func printPrimeContent(report *db.StatusReport) {
+func printPrimeContent(report *db.StatusReport, stats []db.ConceptStats) {
 	fmt.Println(`# Prog CLI Context
 
 This project uses 'prog' for cross-session task management.
@@ -2012,9 +2138,47 @@ prog learn "insight" -c X      # Log a learning
 # Filtering
 prog list -p myproject         # Filter by project
 prog list --status open        # Filter by status
-prog ready -p myproject        # Ready in project
+prog ready -p myproject        # Ready in project`)
 
-## Current State`)
+	// Check for compaction candidates
+	var highCount []db.ConceptStats
+	var oldLearnings []db.ConceptStats
+	sevenDays := 7 * 24 * time.Hour
+
+	for _, s := range stats {
+		if s.LearningCount >= 5 {
+			highCount = append(highCount, s)
+		}
+		if s.OldestAge != nil && *s.OldestAge > sevenDays && s.LearningCount > 0 {
+			oldLearnings = append(oldLearnings, s)
+		}
+	}
+
+	if len(highCount) > 0 || len(oldLearnings) > 0 {
+		fmt.Println(`
+
+## Maintenance`)
+
+		if len(highCount) > 0 {
+			fmt.Println("\nConcepts with 5+ learnings (check for redundancy):")
+			for _, c := range highCount {
+				fmt.Printf("  %s (%d learnings)\n", c.Name, c.LearningCount)
+			}
+		}
+
+		if len(oldLearnings) > 0 {
+			fmt.Println("\nConcepts with old learnings (check for staleness):")
+			for _, c := range oldLearnings {
+				oldest := formatDurationShort(*c.OldestAge)
+				fmt.Printf("  %s (oldest: %s)\n", c.Name, oldest)
+			}
+		}
+
+		fmt.Println(`
+Run 'prog compact' for compaction guidance.`)
+	}
+
+	fmt.Println("\n## Current State")
 
 	if report != nil {
 		fmt.Printf("\n%d open, %d in progress, %d blocked, %d done, %d canceled\n",
@@ -2035,5 +2199,90 @@ prog ready -p myproject        # Ready in project
 		}
 	} else {
 		fmt.Println("\n(No database connection - run 'prog init' if needed)")
+	}
+}
+
+func printCompactContent(stats []db.ConceptStats) {
+	fmt.Println(`# Compact Learnings
+
+Groom learnings and concepts using two phases: **discovery** then **selection**.
+
+## Why Compact?
+
+Over time, learnings accumulate. Without grooming:
+- Redundant entries waste context tokens
+- Stale learnings mislead agents
+- Unclear summaries reduce retrieval value
+- Fragmented insights are harder to find
+
+Compaction keeps the knowledge base high-signal and navigable.
+
+## Phase 1: Discovery
+
+Scan all learning summaries grouped by concept:
+
+` + "```" + `bash
+prog context -p <project> --summary   # All learnings, grouped by concept
+` + "```" + `
+
+Flag candidates:
+- **Redundant**: Similar summaries (potential duplicates)
+- **Stale**: References old code/patterns, or old learnings (7+ days) that may be outdated
+- **Low quality**: Vague summaries, missing detail, not actionable
+- **Fragmented**: Related small learnings that should be one
+
+Present candidates to user. Confirm which to address.
+
+## Phase 2: Selection & Grooming
+
+Load full detail only for flagged candidates:
+
+` + "```" + `bash
+prog context --id lrn-abc123          # Specific learning
+` + "```" + `
+
+For each candidate, determine action:
+- **Archive**: Redundant or superseded → ` + "`prog learn stale <id> --reason \"...\"`" + `
+- **Update**: Valid but unclear → ` + "`prog learn edit <id> --summary \"...\"`" + `
+- **Consolidate**: Merge related → archive originals, create new combined learning
+- **Keep**: No changes needed
+
+Present changes to user. Execute after approval.
+
+## Repeat
+
+After each batch:
+- Re-run discovery if significant changes
+- Continue until no candidates remain or user is satisfied
+
+## Quality Guidelines
+
+**Good summaries**: Specific, actionable, self-contained
+**Archive when**: Superseded, redundant, or references removed code
+**Consolidate when**: Multiple learnings express the same insight
+**Update when**: Insight valid but poorly expressed`)
+
+	// Show current stats if available
+	if len(stats) > 0 {
+		fmt.Println("\n## Current Stats")
+		fmt.Printf("\n%-20s %6s  %s\n", "CONCEPT", "COUNT", "OLDEST")
+		for _, s := range stats {
+			oldest := "-"
+			if s.OldestAge != nil {
+				oldest = formatDurationShort(*s.OldestAge)
+			}
+			fmt.Printf("%-20s %6d  %s\n", s.Name, s.LearningCount, oldest)
+		}
+
+		// Highlight compaction candidates
+		var candidates []string
+		for _, s := range stats {
+			if s.LearningCount >= 5 {
+				candidates = append(candidates, s.Name)
+			}
+		}
+		if len(candidates) > 0 {
+			fmt.Printf("\nCompaction candidates (5+ learnings): %s\n", strings.Join(candidates, ", "))
+		}
 	}
 }

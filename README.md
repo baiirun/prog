@@ -78,6 +78,7 @@ prog done ts-a1b2c3
 | `prog ready` | Show tasks ready for work (open + deps met) |
 | `prog status` | Project overview for agent spin-up |
 | `prog prime` | Output context for Claude Code hooks |
+| `prog compact` | Output compaction workflow guidance |
 | `prog tui` | Launch interactive terminal UI (alias: `prog ui`) |
 
 ### Work Commands
@@ -361,7 +362,36 @@ prog learn "summary" -c concept -p myproject --detail "full explanation..."
 
 ### Grooming and Compaction
 
-Over time, knowledge accumulates and may become stale or redundant.
+Over time, learnings accumulate. Without periodic grooming:
+- **Redundant entries** waste context tokens when retrieved
+- **Stale learnings** mislead agents with outdated information
+- **Unclear summaries** reduce retrieval effectiveness
+- **Fragmented insights** are harder to discover and use
+
+The `prog prime` command automatically flags concepts that may need attention (5+ learnings, or learnings older than 7 days).
+
+#### The Compaction Workflow
+
+Run `prog compact` to get guided prompting for grooming. The workflow has two phases:
+
+**Phase 1: Discovery**
+```bash
+prog concepts -p myproject --stats    # See concept distribution
+prog context -p myproject --summary   # Scan all one-liners
+```
+
+Flag candidates: redundant (similar summaries), stale (old or outdated), low quality (vague, not actionable), fragmented (should be combined).
+
+**Phase 2: Selection & Grooming**
+```bash
+prog context --id lrn-abc123          # Load specific learning
+prog context -c auth -p myproject --json  # Load all for a concept
+```
+
+Then apply actions:
+- **Archive**: `prog learn stale lrn-a lrn-b --reason "Consolidated"`
+- **Update**: `prog learn edit lrn-abc --summary "Clearer summary"`
+- **Consolidate**: Archive originals, create new combined learning
 
 #### Marking Learnings Stale
 
@@ -373,29 +403,15 @@ prog learn stale lrn-abc123 --reason "Refactored in v2"
 
 Stale learnings are excluded by default but can be included with `--include-stale`.
 
-#### Concept Grooming (coming soon)
+#### Concept Grooming
 
 ```bash
-# Merge fragmented concepts
-prog concepts merge authn auth
+# Update a concept's summary
+prog concepts auth -p myproject --summary "Token lifecycle and session management"
 
-# Archive unused concepts
-prog concepts archive legacy-api
+# Rename a fragmented concept
+prog concepts authn -p myproject --rename auth
 ```
-
-#### Learning Compaction (coming soon)
-
-Summarize old learnings into fewer, denser learnings:
-
-```bash
-# Preview what would be compacted
-prog compact auth --dry-run
-
-# Compact learnings older than 30 days
-prog compact auth
-```
-
-This keeps the knowledge base navigable as it grows.
 
 ### Resources & Inspiration
 

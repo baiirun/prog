@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
@@ -30,6 +31,7 @@ const (
 	InputSearch            // Entering search text
 	InputProject           // Entering project filter
 	InputAddDep            // Entering dependency ID to add
+	InputCreate            // Entering new task title
 )
 
 // Status icons
@@ -335,6 +337,47 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.inputMode = InputNone
 	m.inputText = ""
 
+	// Handle inputs that don't require an existing item
+	switch mode {
+	case InputSearch:
+		m.filterSearch = text
+		m.applyFilters()
+		return m, nil
+
+	case InputProject:
+		m.filterProject = text
+		m.applyFilters()
+		return m, nil
+
+	case InputCreate:
+		if text == "" {
+			return m, nil
+		}
+		// Use the selected item's project if available
+		var project string
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			project = m.filtered[m.cursor].Project
+		}
+		return m, func() tea.Msg {
+			now := time.Now()
+			newItem := &model.Item{
+				ID:        model.GenerateID(model.ItemTypeTask),
+				Project:   project,
+				Type:      model.ItemTypeTask,
+				Title:     text,
+				Status:    model.StatusOpen,
+				Priority:  2,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := m.db.CreateItem(newItem); err != nil {
+				return actionMsg{err: err}
+			}
+			return actionMsg{message: fmt.Sprintf("Created %s", newItem.ID)}
+		}
+	}
+
+	// Remaining inputs require an existing item
 	if len(m.filtered) == 0 {
 		return m, nil
 	}
@@ -378,14 +421,6 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			}
 			return actionMsg{message: fmt.Sprintf("Canceled %s", item.ID)}
 		}
-
-	case InputSearch:
-		m.filterSearch = text
-		m.applyFilters()
-
-	case InputProject:
-		m.filterProject = text
-		m.applyFilters()
 
 	case InputAddDep:
 		if text == "" {
@@ -483,6 +518,16 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Dependencies
 	case "a":
 		return m.startInput(InputAddDep, "Add blocker ID: ")
+
+	// Create
+	case "n":
+		label := "New task: "
+		if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+			if proj := m.filtered[m.cursor].Project; proj != "" {
+				label = fmt.Sprintf("New task [%s]: ", proj)
+			}
+		}
+		return m.startInput(InputCreate, label)
 	}
 
 	return m, nil
@@ -660,7 +705,7 @@ func (m Model) listView() string {
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel"))
+	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new"))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("/:search p:project 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
 

@@ -180,6 +180,10 @@ Examples:
 		}
 
 		fmt.Println(item.ID)
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -348,6 +352,10 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Completed %s\n", args[0])
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -386,6 +394,10 @@ Example:
 		} else {
 			fmt.Printf("Canceled %s\n", id)
 		}
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -891,6 +903,10 @@ Examples:
 			output += fmt.Sprintf(" (linked to %s)", *taskID)
 		}
 		fmt.Println(output)
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -1559,6 +1575,132 @@ Example:
 	},
 }
 
+var flagBackupQuiet bool
+
+var backupCmd = &cobra.Command{
+	Use:   "backup [path]",
+	Short: "Create a backup of the database",
+	Long: `Create a backup of the prog database.
+
+Backups are stored in ~/.prog/backups/ by default with timestamped names.
+The last 10 backups are kept; older ones are automatically pruned.
+
+Optionally specify a custom path for the backup file.
+
+Examples:
+  prog backup                    # Create backup in ~/.prog/backups/
+  prog backup ~/my-backup.db     # Create backup at custom path
+  prog backup --quiet            # Silent backup (for hooks)`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		var backupPath string
+		if len(args) > 0 {
+			// Custom path - use VACUUM INTO directly
+			backupPath = args[0]
+			_, err = database.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
+			if err != nil {
+				return fmt.Errorf("failed to create backup: %w", err)
+			}
+		} else {
+			backupPath, err = database.Backup()
+			if err != nil {
+				return err
+			}
+		}
+
+		if !flagBackupQuiet {
+			fmt.Printf("Backup created: %s\n", backupPath)
+		}
+		return nil
+	},
+}
+
+var backupsCmd = &cobra.Command{
+	Use:   "backups",
+	Short: "List available backups",
+	Long: `List all available database backups.
+
+Shows backups in ~/.prog/backups/, newest first.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backups, err := db.ListBackups()
+		if err != nil {
+			return err
+		}
+
+		if len(backups) == 0 {
+			fmt.Println("No backups found")
+			return nil
+		}
+
+		fmt.Printf("%-30s  %10s  %s\n", "BACKUP", "SIZE", "CREATED")
+		for _, b := range backups {
+			size := formatSize(b.Size)
+			age := formatTimeAgo(b.ModTime)
+			fmt.Printf("%-30s  %10s  %s\n", b.Name, size, age)
+		}
+		return nil
+	},
+}
+
+var restoreCmd = &cobra.Command{
+	Use:   "restore <path>",
+	Short: "Restore database from a backup",
+	Long: `Restore the prog database from a backup file.
+
+This replaces the current database with the backup.
+A backup of the current database is created first.
+
+Examples:
+  prog restore ~/.prog/backups/prog-2024-01-09T12-00-00.db
+  prog restore ~/my-backup.db`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backupPath := args[0]
+
+		// First, create a backup of current state
+		database, err := openDB()
+		if err != nil {
+			// If we can't open the DB, that's fine - just restore
+			fmt.Println("Note: Could not backup current database (may not exist)")
+		} else {
+			preRestorePath, err := database.Backup()
+			_ = database.Close()
+			if err != nil {
+				fmt.Printf("Warning: Could not backup current database: %v\n", err)
+			} else {
+				fmt.Printf("Current database backed up to: %s\n", preRestorePath)
+			}
+		}
+
+		// Restore from backup
+		if err := db.Restore(backupPath); err != nil {
+			return err
+		}
+
+		fmt.Printf("Restored from: %s\n", backupPath)
+		return nil
+	},
+}
+
+func formatSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
 var tuiCmd = &cobra.Command{
 	Use:     "tui",
 	Aliases: []string{"ui"},
@@ -1661,6 +1803,9 @@ func init() {
 	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
 	contextCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON for machine processing")
 
+	// backup flags
+	backupCmd.Flags().BoolVarP(&flagBackupQuiet, "quiet", "q", false, "Silent backup (no output)")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(listCmd)
@@ -1688,6 +1833,9 @@ func init() {
 	rootCmd.AddCommand(compactCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(backupsCmd)
+	rootCmd.AddCommand(restoreCmd)
 }
 
 func main() {

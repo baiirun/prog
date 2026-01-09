@@ -254,6 +254,11 @@ Examples:
 			return err
 		}
 
+		// Populate labels for display
+		if err := database.PopulateItemLabels(items); err != nil {
+			return err
+		}
+
 		printItemsTable(items)
 		return nil
 	},
@@ -290,6 +295,12 @@ Examples:
 			fmt.Println("No ready tasks")
 			return nil
 		}
+
+		// Populate labels for display
+		if err := database.PopulateItemLabels(items); err != nil {
+			return err
+		}
+
 		printReadyTable(items)
 		return nil
 	},
@@ -314,6 +325,15 @@ Example:
 		item, err := database.GetItem(args[0])
 		if err != nil {
 			return err
+		}
+
+		// Get labels for display
+		labels, err := database.GetItemLabels(args[0])
+		if err != nil {
+			return err
+		}
+		for _, l := range labels {
+			item.Labels = append(item.Labels, l.Name)
 		}
 
 		logs, err := database.GetLogs(args[0])
@@ -596,6 +616,12 @@ Examples:
 		if err != nil {
 			return err
 		}
+
+		// Populate labels for all item slices in the report
+		_ = database.PopulateItemLabels(report.RecentDone)
+		_ = database.PopulateItemLabels(report.InProgItems)
+		_ = database.PopulateItemLabels(report.BlockedItems)
+		_ = database.PopulateItemLabels(report.ReadyItems)
 
 		printStatusReport(report, flagStatusAll)
 		return nil
@@ -2087,7 +2113,11 @@ func printItemsTable(items []model.Item) {
 
 	fmt.Printf("%-12s %-12s %-4s %s\n", "ID", "STATUS", "PRI", "TITLE")
 	for _, item := range items {
-		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, item.Status, item.Priority, item.Title)
+		title := item.Title
+		if len(item.Labels) > 0 {
+			title = formatLabels(item.Labels) + " " + title
+		}
+		fmt.Printf("%-12s %-12s %-4d %s\n", item.ID, item.Status, item.Priority, title)
 	}
 }
 
@@ -2099,8 +2129,24 @@ func printReadyTable(items []model.Item) {
 
 	fmt.Printf("%-12s %-4s %s\n", "ID", "PRI", "TITLE")
 	for _, item := range items {
-		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, item.Title)
+		title := item.Title
+		if len(item.Labels) > 0 {
+			title = formatLabels(item.Labels) + " " + title
+		}
+		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, title)
 	}
+}
+
+// formatLabels returns labels in [label1] [label2] format.
+func formatLabels(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, l := range labels {
+		parts = append(parts, "["+l+"]")
+	}
+	return strings.Join(parts, " ")
 }
 
 func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts []model.Concept) {
@@ -2112,6 +2158,9 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 	fmt.Printf("Priority:    %d\n", item.Priority)
 	if item.ParentID != nil {
 		fmt.Printf("Parent:      %s\n", *item.ParentID)
+	}
+	if len(item.Labels) > 0 {
+		fmt.Printf("Labels:      %s\n", strings.Join(item.Labels, ", "))
 	}
 
 	if item.Description != "" {
@@ -2157,10 +2206,13 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d done, %d canceled (%d ready)\n\n",
 		report.Open, report.InProgress, report.Blocked, report.Done, report.Canceled, report.Ready)
 
+	// Show project in output when viewing all projects
+	showProject := report.Project == ""
+
 	if len(report.RecentDone) > 0 {
 		fmt.Println("Recently completed:")
 		for _, item := range report.RecentDone {
-			fmt.Printf("  [%s] %s\n", item.ID, item.Title)
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
 		}
 		fmt.Println()
 	}
@@ -2168,7 +2220,7 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	if len(report.InProgItems) > 0 {
 		fmt.Println("In progress:")
 		for _, item := range report.InProgItems {
-			fmt.Printf("  [%s] %s\n", item.ID, item.Title)
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
 		}
 		fmt.Println()
 	}
@@ -2176,7 +2228,7 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	if len(report.BlockedItems) > 0 {
 		fmt.Println("Blocked:")
 		for _, item := range report.BlockedItems {
-			fmt.Printf("  [%s] %s\n", item.ID, item.Title)
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
 		}
 		fmt.Println()
 	}
@@ -2191,12 +2243,28 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 			remaining = len(report.ReadyItems) - readyLimit
 		}
 		for _, item := range displayItems {
-			fmt.Printf("  [%s] %s (pri %d)\n", item.ID, item.Title, item.Priority)
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, true))
 		}
 		if remaining > 0 {
 			fmt.Printf("  (+%d more, use --all to see all)\n", remaining)
 		}
 	}
+}
+
+func formatStatusItem(item model.Item, showProject, showPriority bool) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("[%s]", item.ID))
+	if showProject && item.Project != "" {
+		parts = append(parts, fmt.Sprintf("(%s)", item.Project))
+	}
+	if len(item.Labels) > 0 {
+		parts = append(parts, formatLabels(item.Labels))
+	}
+	parts = append(parts, item.Title)
+	if showPriority {
+		parts = append(parts, fmt.Sprintf("(pri %d)", item.Priority))
+	}
+	return strings.Join(parts, " ")
 }
 
 func printConceptsTable(concepts []model.Concept) {
@@ -2516,10 +2584,12 @@ prog block <id> "why"    # Mark blocked
 
 # Creating
 prog add "title" -p project    # New task
+prog add "title" -l bug        # With label
 prog add "title" -e            # New epic
 
 # Editing
 prog append <id> "text"        # Add to description
+prog label <id> <name>         # Add label to task
 
 # Context retrieval
 prog context -c concept        # Load learnings for a concept
@@ -2530,6 +2600,7 @@ prog learn "insight" -c X      # Log a learning
 # Filtering
 prog list -p myproject         # Filter by project
 prog list --status open        # Filter by status
+prog list -l bug -l urgent     # Filter by labels (AND)
 prog ready -p myproject        # Ready in project`)
 
 	// Check for compaction candidates
@@ -2573,9 +2644,6 @@ Run 'prog compact' for compaction guidance.`)
 	fmt.Println("\n## Current State")
 
 	if report != nil {
-		fmt.Printf("\n%d open, %d in progress, %d blocked, %d done, %d canceled\n",
-			report.Open, report.InProgress, report.Blocked, report.Done, report.Canceled)
-
 		if len(report.InProgItems) > 0 {
 			fmt.Println("\nIn progress:")
 			for _, item := range report.InProgItems {
@@ -2589,6 +2657,8 @@ Run 'prog compact' for compaction guidance.`)
 				fmt.Printf("  [%s] %s\n", item.ID, item.Title)
 			}
 		}
+
+		fmt.Println("\nRun 'prog ready [-p project]' to find unblocked work.")
 	} else {
 		fmt.Println("\n(No database connection - run 'prog init' if needed)")
 	}

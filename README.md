@@ -104,12 +104,24 @@ prog done ts-a1b2c3
 | `prog projects` | List all projects |
 | `prog add -e <title>` | Create an epic instead of task |
 
+### Labels
+
+| Command | Description |
+|---------|-------------|
+| `prog labels` | List all labels for a project |
+| `prog labels add <name>` | Create a new label |
+| `prog labels rm <name>` | Delete a label |
+| `prog labels rename <old> <new>` | Rename a label |
+| `prog label <id> <name>` | Add label to task (creates if needed) |
+| `prog unlabel <id> <name>` | Remove label from task |
+
 ### Flags
 
 | Flag | Commands | Description |
 |------|----------|-------------|
 | `-p, --project` | all | Filter/set project scope |
 | `-e, --epic` | add | Create epic instead of task |
+| `-l, --label` | add, list, ready, status | Attach label at creation / filter by label (repeatable, AND logic) |
 | `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `--parent` | add, list | Set parent epic at creation / filter by parent |
 | `--blocks` | add | Set task this will block at creation |
@@ -215,6 +227,36 @@ prog graph
 ```
 
 The `ready` command automatically filters out tasks with unmet dependencies, so agents only see work they can actually start.
+
+### Labels
+
+Labels are tags for categorizing tasks (bug, feature, refactor, etc). They're project-scoped and identified by name.
+
+```bash
+# Create labels (or they're auto-created on first use)
+prog labels add bug -p myproject
+prog labels add feature -p myproject
+
+# Attach labels to tasks
+prog label ts-a1b2c3 bug
+prog label ts-a1b2c3 urgent
+
+# Or attach at creation
+prog add "Fix login crash" -p myproject -l bug -l urgent
+
+# Filter by labels (AND logic - must have all specified)
+prog list -p myproject -l bug
+prog list -p myproject -l bug -l urgent
+prog ready -p myproject -l feature
+
+# Remove a label
+prog unlabel ts-a1b2c3 urgent
+
+# List all labels in a project
+prog labels -p myproject
+```
+
+Labels appear in list output and task details as `[bug] [urgent]`.
 
 ### Epics
 
@@ -502,6 +544,7 @@ prog  12/47 items  status:oib
 |-----|--------|
 | `/` | Search by title/ID/description |
 | `p` | Filter by project (partial match) |
+| `t` | Filter by label (partial match while typing, repeat to add more) |
 | `1-5` | Toggle status: 1=open 2=in_progress 3=blocked 4=done 5=canceled |
 | `0` | Show all statuses |
 | `esc` | Clear filters |
@@ -511,6 +554,7 @@ prog  12/47 items  status:oib
 - **Items**: Tasks or epics with title, description, status, priority
 - **Status**: `open` → `in_progress` → `done` (or `blocked`, `canceled`)
 - **Dependencies**: Task A can depend on Task B (A is blocked until B is done)
+- **Labels**: Tags for categorization (bug, feature, refactor, etc), project-scoped
 - **Logs**: Timestamped audit trail per item
 - **Projects**: String tag to scope work (e.g., "gaia", "myapp")
 - **Concepts**: Knowledge categories within a project (e.g., "auth", "database")

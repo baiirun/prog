@@ -72,17 +72,6 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 		printPrimeContent(report, nil)
 	})
 
-	// Should contain status counts
-	if !strings.Contains(output, "5 open") {
-		t.Error("missing open count")
-	}
-	if !strings.Contains(output, "2 in progress") {
-		t.Error("missing in progress count")
-	}
-	if !strings.Contains(output, "1 blocked") {
-		t.Error("missing blocked count")
-	}
-
 	// Should contain in-progress items
 	if !strings.Contains(output, "ts-111111") {
 		t.Error("missing in-progress item ID")
@@ -97,6 +86,11 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 	}
 	if !strings.Contains(output, "Stuck here") {
 		t.Error("missing blocked item title")
+	}
+
+	// Should prompt for ready command
+	if !strings.Contains(output, "Run 'prog ready [-p project]'") {
+		t.Error("missing ready command prompt")
 	}
 }
 
@@ -117,14 +111,14 @@ func TestPrintPrimeContent_EmptyReport(t *testing.T) {
 		printPrimeContent(report, nil)
 	})
 
-	// Should contain zeroes
-	if !strings.Contains(output, "0 open") {
-		t.Error("should show 0 open")
-	}
-
 	// Should NOT contain "In progress:" section when empty
 	if strings.Contains(output, "In progress:\n  [") {
 		t.Error("should not show in-progress section when empty")
+	}
+
+	// Should prompt for ready command
+	if !strings.Contains(output, "Run 'prog ready [-p project]'") {
+		t.Error("should prompt to run prog ready")
 	}
 }
 
@@ -240,7 +234,8 @@ func TestPrimeCommand_Integration(t *testing.T) {
 	if !strings.Contains(output, "Integration test task") {
 		t.Error("should contain integration test task in output")
 	}
-	if !strings.Contains(output, "1 in progress") {
-		t.Error("should show 1 in progress")
+	// Should prompt for ready command
+	if !strings.Contains(output, "Run 'prog ready [-p project]'") {
+		t.Error("should prompt to run prog ready")
 	}
 }

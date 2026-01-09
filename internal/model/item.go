@@ -59,6 +59,7 @@ type Item struct {
 	Status      Status   // Current state
 	Priority    int      // 1=high, 2=medium, 3=low
 	ParentID    *string  // Optional parent epic ID
+	Labels      []string // Attached label names (populated separately)
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

@@ -30,6 +30,7 @@ const (
 	InputCancel            // Entering cancel reason
 	InputSearch            // Entering search text
 	InputProject           // Entering project filter
+	InputLabel             // Entering label filter
 	InputAddDep            // Entering dependency ID to add
 	InputCreate            // Entering new task title
 )
@@ -55,6 +56,7 @@ type Model struct {
 	filterProject  string
 	filterStatuses map[model.Status]bool // which statuses to show
 	filterSearch   string
+	filterLabel    string // label filter (partial match, like search)
 
 	// Input state
 	inputMode  InputMode
@@ -113,6 +115,9 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
+
+	labelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("147"))
 
 	// Content area padding
 	contentPadding = 2
@@ -173,7 +178,14 @@ type actionMsg struct {
 func (m Model) loadItems() tea.Cmd {
 	return func() tea.Msg {
 		items, err := m.db.ListItemsFiltered(db.ListFilter{})
-		return itemsMsg{items: items, err: err}
+		if err != nil {
+			return itemsMsg{items: items, err: err}
+		}
+		// Populate labels for display
+		if err := m.db.PopulateItemLabels(items); err != nil {
+			return itemsMsg{items: items, err: err}
+		}
+		return itemsMsg{items: items, err: nil}
 	}
 }
 
@@ -214,6 +226,20 @@ func (m *Model) applyFilters() {
 			if !strings.Contains(strings.ToLower(item.Title), search) &&
 				!strings.Contains(strings.ToLower(item.ID), search) &&
 				!strings.Contains(strings.ToLower(item.Description), search) {
+				continue
+			}
+		}
+		// Label filter (partial match, like search)
+		if m.filterLabel != "" {
+			found := false
+			filter := strings.ToLower(m.filterLabel)
+			for _, itemLabel := range item.Labels {
+				if strings.Contains(strings.ToLower(itemLabel), filter) {
+					found = true
+					break
+				}
+			}
+			if !found {
 				continue
 			}
 		}
@@ -302,13 +328,16 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		if len(m.inputText) > 0 {
 			m.inputText = m.inputText[:len(m.inputText)-1]
-			// Live filter for search and project
+			// Live filter for search, project, and label
 			switch m.inputMode {
 			case InputSearch:
 				m.filterSearch = m.inputText
 				m.applyFilters()
 			case InputProject:
 				m.filterProject = m.inputText
+				m.applyFilters()
+			case InputLabel:
+				m.filterLabel = m.inputText
 				m.applyFilters()
 			}
 		}
@@ -317,13 +346,16 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Add character if printable
 		if len(msg.String()) == 1 {
 			m.inputText += msg.String()
-			// Live filter for search and project
+			// Live filter for search, project, and label
 			switch m.inputMode {
 			case InputSearch:
 				m.filterSearch = m.inputText
 				m.applyFilters()
 			case InputProject:
 				m.filterProject = m.inputText
+				m.applyFilters()
+			case InputLabel:
+				m.filterLabel = m.inputText
 				m.applyFilters()
 			}
 		}
@@ -346,6 +378,11 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case InputProject:
 		m.filterProject = text
+		m.applyFilters()
+		return m, nil
+
+	case InputLabel:
+		m.filterLabel = text
 		m.applyFilters()
 		return m, nil
 
@@ -484,6 +521,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startInput(InputSearch, "Search: ")
 	case "p":
 		return m.startInput(InputProject, "Project: ")
+	case "t":
+		return m.startInput(InputLabel, "Label: ")
 	case "1":
 		m.filterStatuses[model.StatusOpen] = !m.filterStatuses[model.StatusOpen]
 		m.applyFilters()
@@ -508,9 +547,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "esc":
 		// If filters are set, clear them; otherwise quit
-		if m.filterSearch != "" || m.filterProject != "" {
+		if m.filterSearch != "" || m.filterProject != "" || m.filterLabel != "" {
 			m.filterSearch = ""
 			m.filterProject = ""
+			m.filterLabel = ""
 			m.applyFilters()
 		} else {
 			return m, tea.Quit
@@ -711,7 +751,7 @@ func (m Model) listView() string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("/:search p:project 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
+	b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
 
 	return b.String()
 }
@@ -721,7 +761,7 @@ func (m Model) listView() string {
 func (m Model) formatItemLinePlain(item model.Item, width int) string {
 	icon := statusIcon(item.Status)
 
-	// Format: icon id title [project]
+	// Format: icon id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -729,9 +769,17 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		projectWidth = len(project) + 1
 	}
 
+	// Build labels string
+	labels := ""
+	labelsWidth := 0
+	for _, lbl := range item.Labels {
+		labels += " [" + lbl + "]"
+		labelsWidth += len(lbl) + 3 // brackets + space
+	}
+
 	// Calculate available space for title
-	// icon(1) + space(1) + id(9) + space(2) + project + space = ~14 + project
-	titleWidth := width - 14 - projectWidth
+	// icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~14 + labels + project
+	titleWidth := width - 14 - labelsWidth - projectWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -741,7 +789,7 @@ func (m Model) formatItemLinePlain(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	return fmt.Sprintf("%s %s  %-*s %s", icon, item.ID, titleWidth, title, project)
+	return fmt.Sprintf("%s %s  %-*s%s %s", icon, item.ID, titleWidth, title, labels, project)
 }
 
 // formatItemLineStyled returns a styled line with colors for non-selected rows.
@@ -752,7 +800,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 
 	id := dimStyle.Render(item.ID)
 
-	// Format: icon id title [project]
+	// Format: icon id title [label1] [label2] [project]
 	project := ""
 	projectWidth := 0
 	if item.Project != "" {
@@ -760,9 +808,17 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 		projectWidth = len(item.Project) + 3 // brackets + space
 	}
 
+	// Build labels string
+	labels := ""
+	labelsWidth := 0
+	for _, lbl := range item.Labels {
+		labels += " " + labelStyle.Render("["+lbl+"]")
+		labelsWidth += len(lbl) + 3 // brackets + space
+	}
+
 	// Calculate available space for title
-	// icon(1) + space(1) + id(9) + space(2) + project + space = ~14 + project
-	titleWidth := width - 14 - projectWidth
+	// icon(1) + space(1) + id(9) + space(2) + labels + project + space = ~14 + labels + project
+	titleWidth := width - 14 - labelsWidth - projectWidth
 	if titleWidth < 20 {
 		titleWidth = 40
 	}
@@ -772,7 +828,7 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 		title = title[:titleWidth-3] + "..."
 	}
 
-	return fmt.Sprintf("%s %s  %-*s %s", iconStyled, id, titleWidth, title, project)
+	return fmt.Sprintf("%s %s  %-*s%s %s", iconStyled, id, titleWidth, title, labels, project)
 }
 
 func (m Model) activeFiltersString() string {
@@ -795,6 +851,10 @@ func (m Model) activeFiltersString() string {
 
 	if m.filterSearch != "" {
 		parts = append(parts, "search:\""+m.filterSearch+"\"")
+	}
+
+	if m.filterLabel != "" {
+		parts = append(parts, "label:\""+m.filterLabel+"\"")
 	}
 
 	return strings.Join(parts, " ")
@@ -824,6 +884,18 @@ func (m Model) detailView() string {
 
 	if item.ParentID != nil {
 		b.WriteString(detailLabelStyle.Render("Parent:   ") + *item.ParentID + "\n")
+	}
+
+	// Labels
+	if len(item.Labels) > 0 {
+		labelsStr := ""
+		for i, lbl := range item.Labels {
+			if i > 0 {
+				labelsStr += " "
+			}
+			labelsStr += labelStyle.Render("[" + lbl + "]")
+		}
+		b.WriteString(detailLabelStyle.Render("Labels:   ") + labelsStr + "\n")
 	}
 
 	// Dependencies

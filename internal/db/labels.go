@@ -226,6 +226,57 @@ func (db *DB) GetItemLabels(itemID string) ([]model.Label, error) {
 	return labels, nil
 }
 
+// PopulateItemLabels fetches and attaches labels to a slice of items.
+// This is an efficient batch operation that avoids N+1 queries.
+func (db *DB) PopulateItemLabels(items []model.Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Build item ID list
+	ids := make([]any, len(items))
+	placeholders := ""
+	for i, item := range items {
+		ids[i] = item.ID
+		if i > 0 {
+			placeholders += ", "
+		}
+		placeholders += "?"
+	}
+
+	// Query all labels for these items in one go
+	query := fmt.Sprintf(`
+		SELECT il.item_id, l.name
+		FROM item_labels il
+		JOIN labels l ON il.label_id = l.id
+		WHERE il.item_id IN (%s)
+		ORDER BY il.item_id, l.name
+	`, placeholders)
+
+	rows, err := db.Query(query, ids...)
+	if err != nil {
+		return fmt.Errorf("failed to query item labels: %w", err)
+	}
+	defer rows.Close()
+
+	// Build a map of item ID -> label names
+	labelMap := make(map[string][]string)
+	for rows.Next() {
+		var itemID, labelName string
+		if err := rows.Scan(&itemID, &labelName); err != nil {
+			return fmt.Errorf("failed to scan label: %w", err)
+		}
+		labelMap[itemID] = append(labelMap[itemID], labelName)
+	}
+
+	// Attach labels to items
+	for i := range items {
+		items[i].Labels = labelMap[items[i].ID]
+	}
+
+	return nil
+}
+
 // SetLabelColor updates a label's color.
 func (db *DB) SetLabelColor(project, name, color string) error {
 	result, err := db.Exec(`

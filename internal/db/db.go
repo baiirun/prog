@@ -47,10 +47,66 @@ CREATE TABLE IF NOT EXISTS projects (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS concepts (
+	name TEXT NOT NULL,
+	project TEXT NOT NULL,
+	summary TEXT,
+	last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (name, project)
+);
+
+CREATE TABLE IF NOT EXISTS learnings (
+	id TEXT PRIMARY KEY,
+	project TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	task_id TEXT REFERENCES items(id),
+	summary TEXT NOT NULL,
+	detail TEXT,
+	files TEXT,
+	status TEXT DEFAULT 'active'
+);
+
+CREATE TABLE IF NOT EXISTS learning_concepts (
+	learning_id TEXT REFERENCES learnings(id),
+	concept TEXT NOT NULL,
+	project TEXT NOT NULL,
+	PRIMARY KEY (learning_id, concept, project),
+	FOREIGN KEY (concept, project) REFERENCES concepts(name, project)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
+	summary,
+	detail,
+	content='learnings',
+	content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS learnings_ai AFTER INSERT ON learnings BEGIN
+	INSERT INTO learnings_fts(rowid, summary, detail)
+	VALUES (NEW.rowid, NEW.summary, NEW.detail);
+END;
+
+CREATE TRIGGER IF NOT EXISTS learnings_ad AFTER DELETE ON learnings BEGIN
+	INSERT INTO learnings_fts(learnings_fts, rowid, summary, detail)
+	VALUES ('delete', OLD.rowid, OLD.summary, OLD.detail);
+END;
+
+CREATE TRIGGER IF NOT EXISTS learnings_au AFTER UPDATE ON learnings BEGIN
+	INSERT INTO learnings_fts(learnings_fts, rowid, summary, detail)
+	VALUES ('delete', OLD.rowid, OLD.summary, OLD.detail);
+	INSERT INTO learnings_fts(rowid, summary, detail)
+	VALUES (NEW.rowid, NEW.summary, NEW.detail);
+END;
+
 CREATE INDEX IF NOT EXISTS idx_items_project ON items(project);
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);
 CREATE INDEX IF NOT EXISTS idx_logs_item ON logs(item_id);
+CREATE INDEX IF NOT EXISTS idx_learnings_project ON learnings(project);
+CREATE INDEX IF NOT EXISTS idx_learnings_task ON learnings(task_id);
+CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
+CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept, project);
 `
 
 // DB wraps a SQL database connection with task-specific operations.

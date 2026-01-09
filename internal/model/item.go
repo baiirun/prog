@@ -140,3 +140,23 @@ func GenerateConceptID() string {
 	}
 	return "con-" + hex.EncodeToString(b)
 }
+
+// Label represents a tag that can be attached to items for categorization.
+// Labels are project-scoped and identified by name (IDs are internal).
+type Label struct {
+	ID        string // lbl-XXXXXX (internal)
+	Name      string // User-facing identifier, unique per project
+	Project   string
+	Color     string // Optional hex color for UI display
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// GenerateLabelID returns a new label ID with lbl- prefix and 6 hex chars.
+func GenerateLabelID() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "lbl-" + hex.EncodeToString(b)
+}

@@ -78,6 +78,11 @@ func openDB() (*db.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w (try running 'prog init' first)", err)
 	}
+	// Run any pending migrations
+	if err := database.Migrate(); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("migration failed: %w", err)
+	}
 	return database, nil
 }
 

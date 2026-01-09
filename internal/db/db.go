@@ -13,7 +13,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+// SchemaVersion is the current schema version.
+// Increment this when adding new migrations.
+const SchemaVersion = 2
+
+// baseSchema is the original schema (version 1).
+// New tables should be added via migrations, not here.
+const baseSchema = `
 CREATE TABLE IF NOT EXISTS items (
 	id TEXT PRIMARY KEY,
 	project TEXT NOT NULL,
@@ -108,6 +114,34 @@ CREATE INDEX IF NOT EXISTS idx_learnings_status ON learnings(status);
 CREATE INDEX IF NOT EXISTS idx_learning_concepts_concept ON learning_concepts(concept_id);
 `
 
+// migrations defines incremental schema changes.
+// Each migration upgrades from version N-1 to N.
+// Index 0 is migration to version 2, index 1 is migration to version 3, etc.
+var migrations = []string{
+	// Version 2: Add labels system
+	`
+CREATE TABLE IF NOT EXISTS labels (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	project TEXT NOT NULL,
+	color TEXT,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE (name, project)
+);
+
+CREATE TABLE IF NOT EXISTS item_labels (
+	item_id TEXT REFERENCES items(id),
+	label_id TEXT REFERENCES labels(id),
+	PRIMARY KEY (item_id, label_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_labels_project ON labels(project);
+CREATE INDEX IF NOT EXISTS idx_item_labels_item ON item_labels(item_id);
+CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label_id);
+`,
+}
+
 // DB wraps a SQL database connection with task-specific operations.
 type DB struct {
 	*sql.DB
@@ -144,11 +178,17 @@ func Open(path string) (*DB, error) {
 	return &DB{db}, nil
 }
 
-// Init creates the schema and migrates existing data.
+// Init creates the schema for a fresh database.
+// For existing databases, use Migrate() instead.
 func (db *DB) Init() error {
-	_, err := db.Exec(schema)
+	_, err := db.Exec(baseSchema)
 	if err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
+	}
+
+	// Run all migrations to bring to current version
+	if err := db.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
 	// Migrate existing projects from items table
@@ -157,6 +197,71 @@ func (db *DB) Init() error {
 	}
 
 	return nil
+}
+
+// Migrate runs any pending schema migrations.
+// Safe to call on every startup - only runs migrations newer than current version.
+func (db *DB) Migrate() error {
+	currentVersion, err := db.getSchemaVersion()
+	if err != nil {
+		return fmt.Errorf("failed to get schema version: %w", err)
+	}
+
+	// If version is 0 but tables exist, this is a legacy database (v1)
+	if currentVersion == 0 {
+		exists, err := db.tableExists("items")
+		if err != nil {
+			return fmt.Errorf("failed to check tables: %w", err)
+		}
+		if exists {
+			currentVersion = 1
+			if err := db.setSchemaVersion(1); err != nil {
+				return fmt.Errorf("failed to set legacy version: %w", err)
+			}
+		}
+	}
+
+	// Run pending migrations
+	for i, migration := range migrations {
+		targetVersion := i + 2 // migrations[0] upgrades to v2
+		if currentVersion >= targetVersion {
+			continue
+		}
+
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
+		}
+
+		if err := db.setSchemaVersion(targetVersion); err != nil {
+			return fmt.Errorf("failed to update version to %d: %w", targetVersion, err)
+		}
+		currentVersion = targetVersion
+	}
+
+	return nil
+}
+
+// getSchemaVersion returns the current schema version using PRAGMA user_version.
+func (db *DB) getSchemaVersion() (int, error) {
+	var version int
+	err := db.QueryRow("PRAGMA user_version").Scan(&version)
+	return version, err
+}
+
+// setSchemaVersion sets the schema version using PRAGMA user_version.
+func (db *DB) setSchemaVersion(version int) error {
+	_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	return err
+}
+
+// tableExists checks if a table exists in the database.
+func (db *DB) tableExists(name string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+		name,
+	).Scan(&count)
+	return count > 0, err
 }
 
 // migrateProjects populates the projects table from existing items.

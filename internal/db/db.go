@@ -179,6 +179,18 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
+	// Enable WAL mode for better concurrency (allows concurrent readers during writes)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+	}
+
+	// Wait up to 500ms on lock contention before returning SQLITE_BUSY
+	if _, err := db.Exec("PRAGMA busy_timeout=500"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
+	}
+
 	return &DB{db}, nil
 }
 

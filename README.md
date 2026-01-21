@@ -1,6 +1,6 @@
 # prog
 
-Task and tacit knowledge management for AI agents. SQLite-backed, CLI-driven.
+SQLite-backed task and tacit knowledge management for AI agents. Agents lose context between sessions. Prog persists tasks, progress logs, and learnings so agents can pick up where others left off.
 
 ## Install
 

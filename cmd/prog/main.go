@@ -954,10 +954,46 @@ var learnCmd = &cobra.Command{
 	Short: "Log a learning for future context retrieval",
 	Long: `Log a learning discovered during work.
 
+Learnings capture tacit knowledge—insights that aren't obvious from code alone.
+They're stored with a two-phase structure for efficient context retrieval:
+
+  Summary (required): One-liner (≤120 chars) for quick scanning
+  Detail (optional): Full explanation with context, examples, and caveats
+
 Learnings are tagged with concepts for organized retrieval.
 Concepts are created automatically if they don't exist.
 
 If a task is in progress for the project, the learning is linked to it.
+
+CONTEXT MANAGEMENT FLOW:
+┌─────────────────────────────────────────────────────────────┐
+│ 1. During Work: Discover a pattern, gotcha, or insight      │
+│    → prog learn "summary" -c concept --detail "full text"   │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Future Retrieval: Load context before starting work     │
+│    → prog context -c concept        # by concept           │
+│    → prog context -q "search term"  # full-text search     │
+│    → prog context --summary         # scan all one-liners  │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Two-Phase Retrieval:                                    │
+│    Phase 1: See summaries (lightweight, fast)              │
+│    Phase 2: Load full detail only when relevant            │
+└─────────────────────────────────────────────────────────────┘
+
+LEARNING STRUCTURE:
+  ┌─────────────────────────────────────┐
+  │ Learning (lrn-XXXXXX)                │
+  │ ├─ Summary: "One-liner for scanning" │
+  │ ├─ Detail: "Full context..."         │
+  │ ├─ Concepts: [auth, concurrency]     │
+  │ ├─ Files: [auth.go, token.go]        │
+  │ ├─ Status: active/stale/archived     │
+  │ └─ Task ID: ts-abc123 (optional)     │
+  └─────────────────────────────────────┘
 
 Examples:
   prog learn "Token refresh has race condition" -p myproject -c auth -c concurrency
@@ -1142,6 +1178,38 @@ var conceptsCmd = &cobra.Command{
 	Long: `List all concepts for a project, or edit a concept.
 
 Concepts are knowledge categories that group related learnings.
+They enable organized context retrieval by topic (e.g., "auth", "database", "api").
+
+CONCEPT MODEL:
+  ┌─────────────────────────────────────────────────────────┐
+  │ Concepts (con-XXXXXX)                                    │
+  │ ├─ Name: "auth"                                          │
+  │ ├─ Project: "myproject"                                  │
+  │ ├─ Summary: "Authentication patterns and gotchas"        │
+  │ └─ Learning Count: 5                                     │
+  └─────────────────────────────────────────────────────────┘
+           │
+           │ many-to-many
+           │
+           ↓
+  ┌─────────────────────────────────────────────────────────┐
+  │ Learnings                                                │
+  │ ├─ lrn-abc: "Token refresh race condition" [auth]       │
+  │ ├─ lrn-def: "JWT validation edge case" [auth]           │
+  │ └─ lrn-ghi: "Session timeout handling" [auth]            │
+  └─────────────────────────────────────────────────────────┘
+
+RETRIEVAL PATTERNS:
+  1. By Concept: prog context -c auth
+     → Returns all learnings tagged with "auth"
+  
+  2. By Task: prog concepts --related ts-abc123
+     → Suggests concepts based on task title/description
+     → Then: prog context -c <suggested-concept>
+  
+  3. Full-Text Search: prog context -q "token refresh"
+     → Searches across all learning summaries and details
+
 Default sort is by learning count (most used first).
 
 Examples:

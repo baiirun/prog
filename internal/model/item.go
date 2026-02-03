@@ -51,17 +51,18 @@ func (s Status) IsValid() bool {
 
 // Item represents a task or epic in the system.
 type Item struct {
-	ID          string   // Unique identifier (ts-XXXXXX or ep-XXXXXX)
-	Project     string   // Project scope (e.g., "gaia", "myapp")
-	Type        ItemType // "task" or "epic"
-	Title       string   // Short description
-	Description string   // Full context, notes, handoff info
-	Status      Status   // Current state
-	Priority    int      // 1=high, 2=medium, 3=low
-	ParentID    *string  // Optional parent epic ID
-	Labels      []string // Attached label names (populated separately)
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID               string   // Unique identifier (ts-XXXXXX or ep-XXXXXX)
+	Project          string   // Project scope (e.g., "gaia", "myapp")
+	Type             ItemType // "task" or "epic"
+	Title            string   // Short description
+	Description      string   // Full context, notes, handoff info
+	DefinitionOfDone *string  // Completion criteria for agents (natural language)
+	Status           Status   // Current state
+	Priority         int      // 1=high, 2=medium, 3=low
+	ParentID         *string  // Optional parent epic ID
+	Labels           []string // Attached label names (populated separately)
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Log is a timestamped audit trail entry for an item.

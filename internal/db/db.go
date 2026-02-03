@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -139,6 +139,10 @@ CREATE TABLE IF NOT EXISTS item_labels (
 CREATE INDEX IF NOT EXISTS idx_labels_project ON labels(project);
 CREATE INDEX IF NOT EXISTS idx_item_labels_item ON item_labels(item_id);
 CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label_id);
+`,
+	// Version 3: Add definition_of_done to items
+	`
+ALTER TABLE items ADD COLUMN definition_of_done TEXT;
 `,
 }
 

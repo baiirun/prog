@@ -486,3 +486,52 @@ func TestListItemsFiltered_CombinedFilters(t *testing.T) {
 
 	_ = task3
 }
+
+func TestReadyItems_WithDefinitionOfDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a task without DoD
+	createTestItemWithProject(t, db, "Task without DoD", "test", model.StatusOpen, 2)
+
+	// Create a task with DoD
+	dod := "Tests pass; Docs updated"
+	itemWithDoD := &model.Item{
+		ID:               model.GenerateID(model.ItemTypeTask),
+		Project:          "test",
+		Type:             model.ItemTypeTask,
+		Title:            "Task with DoD",
+		DefinitionOfDone: &dod,
+		Status:           model.StatusOpen,
+		Priority:         1,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	if err := db.CreateItem(itemWithDoD); err != nil {
+		t.Fatalf("failed to create item with DoD: %v", err)
+	}
+
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to get ready: %v", err)
+	}
+
+	if len(ready) != 2 {
+		t.Errorf("expected 2 ready items, got %d", len(ready))
+	}
+
+	// Verify the item with DoD has DefinitionOfDone populated
+	var foundDoD bool
+	for _, item := range ready {
+		if item.ID == itemWithDoD.ID {
+			if item.DefinitionOfDone == nil {
+				t.Error("expected DefinitionOfDone to be populated")
+			} else if *item.DefinitionOfDone != dod {
+				t.Errorf("DefinitionOfDone = %q, want %q", *item.DefinitionOfDone, dod)
+			}
+			foundDoD = true
+		}
+	}
+	if !foundDoD {
+		t.Error("item with DoD not found in ready list")
+	}
+}

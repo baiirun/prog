@@ -51,6 +51,9 @@ prog onboard
 prog add "Implement user authentication" -p myproject --priority 1
 # Output: ts-a1b2c3
 
+# Create a task with Definition of Done
+prog add "Add login endpoint" -p myproject --dod "Tests pass; Handles invalid credentials; Rate limited"
+
 # See what's ready to work on
 prog ready -p myproject
 
@@ -125,6 +128,7 @@ prog done ts-a1b2c3
 | `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `--parent` | add, list | Set parent epic at creation / filter by parent |
 | `--blocks` | add | Set task this will block at creation |
+| `--dod` | add, edit | Definition of done (completion criteria for agents) |
 | `--status` | list | Filter by status |
 | `--type` | list | Filter by item type (task, epic) |
 | `--blocking` | list | Show items that block the given ID |
@@ -190,10 +194,27 @@ prog desc ts-d4e5f6 "Implement login endpoint with JWT auth and rate limiting"
 prog edit ts-d4e5f6
 ```
 
+### Definition of Done
+
+Set explicit completion criteria so agents know when work is truly done:
+
+```bash
+# Set at creation
+prog add "Implement auth" -p myproject --dod "Tests pass; Handles edge cases; Docs updated"
+
+# Update existing task
+prog edit ts-d4e5f6 --dod "Tests pass; No security warnings"
+
+# Clear DoD
+prog edit ts-d4e5f6 --dod ""
+```
+
+Tasks with DoD show `[DoD]` in `prog ready` output. Agents should verify each criterion before calling `prog done`.
+
 ### Finish or hand off
 
 ```bash
-# Complete
+# Complete (verify DoD criteria first if set)
 prog done ts-d4e5f6
 
 # Or cancel if no longer needed
@@ -551,8 +572,9 @@ prog  12/47 items  status:oib
 
 ## Data Model
 
-- **Items**: Tasks or epics with title, description, status, priority
+- **Items**: Tasks or epics with title, description, status, priority, definition of done
 - **Status**: `open` → `in_progress` → `done` (or `blocked`, `canceled`)
+- **Definition of Done**: Optional completion criteria for agent verification
 - **Dependencies**: Task A can depend on Task B (A is blocked until B is done)
 - **Labels**: Tags for categorization (bug, feature, refactor, etc), project-scoped
 - **Logs**: Timestamped audit trail per item

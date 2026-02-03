@@ -388,3 +388,87 @@ func TestSetParent_NotFound(t *testing.T) {
 		t.Error("expected error for nonexistent parent")
 	}
 }
+
+func TestCreateItem_WithDefinitionOfDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	dod := "Tests pass; Docs updated"
+	item := &model.Item{
+		ID:               model.GenerateID(model.ItemTypeTask),
+		Project:          "test",
+		Type:             model.ItemTypeTask,
+		Title:            "Task with DoD",
+		DefinitionOfDone: &dod,
+		Status:           model.StatusOpen,
+		Priority:         2,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	got, err := db.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("failed to get item: %v", err)
+	}
+
+	if got.DefinitionOfDone == nil {
+		t.Fatal("expected DefinitionOfDone to be set")
+	}
+	if *got.DefinitionOfDone != dod {
+		t.Errorf("DefinitionOfDone = %q, want %q", *got.DefinitionOfDone, dod)
+	}
+}
+
+func TestSetDefinitionOfDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := &model.Item{
+		ID:        model.GenerateID(model.ItemTypeTask),
+		Project:   "test",
+		Type:      model.ItemTypeTask,
+		Title:     "Test",
+		Status:    model.StatusOpen,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := db.CreateItem(item); err != nil {
+		t.Fatalf("failed to create item: %v", err)
+	}
+
+	// Set DoD
+	dod := "All tests pass"
+	if err := db.SetDefinitionOfDone(item.ID, &dod); err != nil {
+		t.Fatalf("failed to set DoD: %v", err)
+	}
+
+	got, _ := db.GetItem(item.ID)
+	if got.DefinitionOfDone == nil {
+		t.Fatal("expected DefinitionOfDone to be set")
+	}
+	if *got.DefinitionOfDone != dod {
+		t.Errorf("DefinitionOfDone = %q, want %q", *got.DefinitionOfDone, dod)
+	}
+
+	// Clear DoD
+	if err := db.SetDefinitionOfDone(item.ID, nil); err != nil {
+		t.Fatalf("failed to clear DoD: %v", err)
+	}
+
+	got, _ = db.GetItem(item.ID)
+	if got.DefinitionOfDone != nil {
+		t.Errorf("expected DefinitionOfDone to be nil, got %q", *got.DefinitionOfDone)
+	}
+}
+
+func TestSetDefinitionOfDone_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	dod := "Some criteria"
+	err := db.SetDefinitionOfDone("nonexistent", &dod)
+	if err == nil {
+		t.Error("expected error for nonexistent item")
+	}
+}

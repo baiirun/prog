@@ -73,6 +73,7 @@ var (
 	flagLabelsColor      string
 	flagAddLabels        []string
 	flagFilterLabels     []string
+	flagDoD              string
 )
 
 func openDB() (*db.DB, error) {
@@ -170,6 +171,11 @@ Examples:
 			Priority:  flagPriority,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
+		}
+
+		// Set definition of done if specified
+		if cmd.Flags().Changed("dod") && flagDoD != "" {
+			item.DefinitionOfDone = &flagDoD
 		}
 
 		if err := database.CreateItem(item); err != nil {
@@ -667,10 +673,11 @@ Example:
 
 var editCmd = &cobra.Command{
 	Use:   "edit <id>",
-	Short: "Edit a task's title or description",
-	Long: `Edit a task's title or description.
+	Short: "Edit a task's title, description, or definition of done",
+	Long: `Edit a task's title, description, or definition of done.
 
 With --title, updates the title directly without opening an editor.
+With --dod, sets or clears the definition of done (use "" to clear).
 Without flags, opens the description in your configured editor.
 
 Uses $PROG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
@@ -678,6 +685,8 @@ Uses $PROG_EDITOR if set, otherwise defaults to nvim, then nano, then vi.
 Examples:
   prog edit ts-a1b2c3                     # Edit description in editor
   prog edit ts-a1b2c3 --title "New title" # Update title directly
+  prog edit ts-a1b2c3 --dod "Tests pass"  # Set definition of done
+  prog edit ts-a1b2c3 --dod ""            # Clear definition of done
   PROG_EDITOR=code prog edit ts-a1b2c3    # Use VS Code as editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -688,6 +697,23 @@ Examples:
 		defer func() { _ = database.Close() }()
 
 		id := args[0]
+
+		// If --dod flag is set, update definition of done
+		if cmd.Flags().Changed("dod") {
+			var dod *string
+			if flagDoD != "" {
+				dod = &flagDoD
+			}
+			if err := database.SetDefinitionOfDone(id, dod); err != nil {
+				return err
+			}
+			if dod == nil {
+				fmt.Printf("Cleared definition of done for %s\n", id)
+			} else {
+				fmt.Printf("Updated definition of done for %s\n", id)
+			}
+			return nil
+		}
 
 		// If --title flag is set, update title directly
 		if flagEditTitle != "" {
@@ -2063,6 +2089,7 @@ func init() {
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
 	addCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
+	addCmd.Flags().StringVar(&flagDoD, "dod", "", "Definition of done (completion criteria)")
 
 	// list flags
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
@@ -2079,6 +2106,7 @@ func init() {
 
 	// edit flags
 	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the task")
+	editCmd.Flags().StringVar(&flagDoD, "dod", "", "Definition of done (use \"\" to clear)")
 
 	// ready flags
 	readyCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
@@ -2202,6 +2230,10 @@ func printReadyTable(items []model.Item) {
 		if len(item.Labels) > 0 {
 			title = formatLabels(item.Labels) + " " + title
 		}
+		// Add [DoD] indicator if definition of done is set
+		if item.DefinitionOfDone != nil && *item.DefinitionOfDone != "" {
+			title = "[DoD] " + title
+		}
 		fmt.Printf("%-12s %-4d %s\n", item.ID, item.Priority, title)
 	}
 }
@@ -2234,6 +2266,10 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 
 	if item.Description != "" {
 		fmt.Printf("\nDescription:\n%s\n", item.Description)
+	}
+
+	if item.DefinitionOfDone != nil && *item.DefinitionOfDone != "" {
+		fmt.Printf("\nDefinition of Done:\n%s\n", *item.DefinitionOfDone)
 	}
 
 	if len(deps) > 0 {
@@ -2640,6 +2676,16 @@ Work is NOT complete until prog reflects reality.
 - Use TodoWrite for tactical within-session checklists
 - Always claim work before starting: prog start <id>
 - Log progress frequently, not just at the end
+
+## Before Completing Work
+
+If a task has a Definition of Done:
+1. Run 'prog show <id>' to see the DoD criteria
+2. Verify each criterion is met before marking complete
+3. Run any commands mentioned in the DoD
+4. Only then call 'prog done <id>'
+
+Tasks with DoD show [DoD] in 'prog ready' output.
 
 ## Essential Commands
 

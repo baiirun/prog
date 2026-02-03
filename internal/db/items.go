@@ -26,9 +26,9 @@ func (db *DB) CreateItem(item *model.Item) error {
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO items (id, project, type, title, description, status, priority, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.Project, item.Type, item.Title, item.Description,
+		INSERT INTO items (id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.Project, item.Type, item.Title, item.Description, item.DefinitionOfDone,
 		item.Status, item.Priority, item.ParentID, item.CreatedAt, item.UpdatedAt,
 	)
 	if err != nil {
@@ -40,13 +40,13 @@ func (db *DB) CreateItem(item *model.Item) error {
 // GetItem retrieves an item by ID.
 func (db *DB) GetItem(id string) (*model.Item, error) {
 	row := db.QueryRow(`
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
+		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
 		FROM items WHERE id = ?`, id)
 
 	item := &model.Item{}
-	var parentID sql.NullString
+	var parentID, definitionOfDone sql.NullString
 	err := row.Scan(
-		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
+		&item.ID, &item.Project, &item.Type, &item.Title, &item.Description, &definitionOfDone,
 		&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -58,6 +58,9 @@ func (db *DB) GetItem(id string) (*model.Item, error) {
 
 	if parentID.Valid {
 		item.ParentID = &parentID.String
+	}
+	if definitionOfDone.Valid {
+		item.DefinitionOfDone = &definitionOfDone.String
 	}
 	return item, nil
 }
@@ -180,6 +183,26 @@ func (db *DB) SetTitle(id string, title string) error {
 		title, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to set title: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+	}
+	return nil
+}
+
+// SetDefinitionOfDone sets or clears an item's definition of done.
+// Pass nil to clear the DoD.
+func (db *DB) SetDefinitionOfDone(id string, dod *string) error {
+	result, err := db.Exec(`
+		UPDATE items
+		SET definition_of_done = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		dod, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to set definition of done: %w", err)
 	}
 
 	rows, _ := result.RowsAffected()

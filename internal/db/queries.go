@@ -27,7 +27,7 @@ func (db *DB) ListItems(project string, status *model.Status) ([]model.Item, err
 
 // ListItemsFiltered returns items matching the given filters.
 func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
-	query := `SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at FROM items WHERE 1=1`
+	query := `SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at FROM items WHERE 1=1`
 	args := []any{}
 
 	if filter.Project != "" {
@@ -106,7 +106,7 @@ func (db *DB) ReadyItems(project string) ([]model.Item, error) {
 // ReadyItemsFiltered returns ready items with optional label filtering.
 func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item, error) {
 	query := `
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
+		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
 		FROM items
 		WHERE status = 'open'
 		  AND id NOT IN (
@@ -257,7 +257,7 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 
 	// Get recent done (last 3)
 	recentQuery := `
-		SELECT id, project, type, title, description, status, priority, parent_id, created_at, updated_at
+		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
 		FROM items WHERE status = 'done'`
 	recentArgs := []any{}
 	if project != "" {
@@ -307,15 +307,18 @@ func (db *DB) queryItems(query string, args ...any) ([]model.Item, error) {
 	var items []model.Item
 	for rows.Next() {
 		var item model.Item
-		var parentID sql.NullString
+		var parentID, definitionOfDone sql.NullString
 		if err := rows.Scan(
-			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description,
+			&item.ID, &item.Project, &item.Type, &item.Title, &item.Description, &definitionOfDone,
 			&item.Status, &item.Priority, &parentID, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan item: %w", err)
 		}
 		if parentID.Valid {
 			item.ParentID = &parentID.String
+		}
+		if definitionOfDone.Valid {
+			item.DefinitionOfDone = &definitionOfDone.String
 		}
 		items = append(items, item)
 	}

@@ -49,6 +49,14 @@ const (
 	minSplitWidth = 80 // Minimum terminal width for split view
 )
 
+// FocusPane represents which pane is focused in split view.
+type FocusPane int
+
+const (
+	FocusList FocusPane = iota
+	FocusDetail
+)
+
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
 	db       *db.DB
@@ -77,6 +85,10 @@ type Model struct {
 	// Detail view state
 	detailLogs []model.Log
 	detailDeps []string
+
+	// Split view state
+	focusPane    FocusPane // Which pane is focused (list or detail)
+	detailScroll int       // Scroll offset in detail pane
 }
 
 // Styles
@@ -501,13 +513,30 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// In split view with detail focused, handle detail-specific navigation
+	if m.width >= minSplitWidth && m.focusPane == FocusDetail {
+		return m.handleDetailPaneKey(msg)
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
+	case "tab":
+		// Toggle focus between list and detail panes (only in split view)
+		if m.width >= minSplitWidth {
+			if m.focusPane == FocusList {
+				m.focusPane = FocusDetail
+			} else {
+				m.focusPane = FocusList
+			}
+		}
+		return m, nil
+
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
+			m.detailScroll = 0 // Reset detail scroll on cursor change
 			// Auto-load detail in split view
 			if m.width >= minSplitWidth {
 				return m, m.loadDetail()
@@ -517,6 +546,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
+			m.detailScroll = 0 // Reset detail scroll on cursor change
 			// Auto-load detail in split view
 			if m.width >= minSplitWidth {
 				return m, m.loadDetail()
@@ -526,6 +556,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g", "home":
 		if m.cursor != 0 {
 			m.cursor = 0
+			m.detailScroll = 0
 			// Auto-load detail in split view
 			if m.width >= minSplitWidth {
 				return m, m.loadDetail()
@@ -536,6 +567,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		newCursor := max(0, len(m.filtered)-1)
 		if m.cursor != newCursor {
 			m.cursor = newCursor
+			m.detailScroll = 0
 			// Auto-load detail in split view
 			if m.width >= minSplitWidth {
 				return m, m.loadDetail()
@@ -544,10 +576,12 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", "l":
 		// In narrow mode, open full-screen detail view
-		// In split view, detail is already visible - do nothing
+		// In split view, focus the detail pane
 		if m.width < minSplitWidth && len(m.filtered) > 0 {
 			m.viewMode = ViewDetail
 			return m, m.loadDetail()
+		} else if m.width >= minSplitWidth {
+			m.focusPane = FocusDetail
 		}
 
 	// Actions
@@ -620,6 +654,52 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m.startInput(InputCreate, label)
+	}
+
+	return m, nil
+}
+
+// handleDetailPaneKey handles keys when detail pane is focused in split view.
+func (m Model) handleDetailPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "tab", "esc", "h":
+		// Return focus to list
+		m.focusPane = FocusList
+		return m, nil
+
+	case "up", "k":
+		// Scroll detail up
+		if m.detailScroll > 0 {
+			m.detailScroll--
+		}
+
+	case "down", "j":
+		// Scroll detail down (will be bounded by content in detailView)
+		m.detailScroll++
+
+	case "g", "home":
+		m.detailScroll = 0
+
+	case "G", "end":
+		// Scroll to bottom - set to large value, will be bounded in render
+		m.detailScroll = 9999
+
+	// Actions still work when detail is focused
+	case "s":
+		return m.doStart()
+	case "d":
+		return m.doDone()
+	case "b":
+		return m.startInput(InputBlock, "Block reason: ")
+	case "L":
+		return m.startInput(InputLog, "Log message: ")
+	case "c":
+		return m.startInput(InputCancel, "Cancel reason (optional): ")
+	case "a":
+		return m.startInput(InputAddDep, "Add blocker ID: ")
 	}
 
 	return m, nil
@@ -754,60 +834,128 @@ func (m Model) listView() string {
 
 // splitView renders the split layout with list on left and details on right.
 func (m Model) splitView() string {
-	// Calculate pane widths
-	leftWidth := (m.width - 1) / 2 // -1 for separator
-	rightWidth := m.width - leftWidth - 1
+	// Border colors
+	focusedColor := lipgloss.Color("39")    // Blue for focused
+	unfocusedColor := lipgloss.Color("241") // Dim gray for unfocused
 
-	// Render left pane (list)
-	leftContent := m.renderListPane(leftWidth - contentPadding)
+	// Calculate pane dimensions
+	// Each pane has: 1 border left + content + 1 border right
+	// Plus 1 char gap between panes
+	gap := 1
+	borderChars := 4 // 2 per pane (left + right borders)
+	availableWidth := m.width - borderChars - gap - (contentPadding * 2)
+	leftContentWidth := availableWidth / 2
+	rightContentWidth := availableWidth - leftContentWidth
 
-	// Render right pane (details)
-	rightContent := m.detailView(rightWidth - contentPadding)
-
-	// Build separator (vertical line for the full height)
-	separatorHeight := m.height - 4 // Account for padding
-	if separatorHeight < 10 {
-		separatorHeight = 20
+	// Height: fill viewport
+	// Account for: outer padding top (1), border top (1), border bottom (1), padding bottom (1)
+	contentHeight := m.height - 4
+	if contentHeight < 10 {
+		contentHeight = 10
 	}
-	var sepLines []string
-	for i := 0; i < separatorHeight; i++ {
-		sepLines = append(sepLines, "│")
-	}
-	separator := strings.Join(sepLines, "\n")
 
-	// Ensure both panes have the same height by padding with newlines
+	// Render content for each pane, passing the exact height available
+	leftContent := m.renderListPaneWithHeight(leftContentWidth, contentHeight)
+	rightContent := m.detailViewWithHeight(rightContentWidth, contentHeight)
+
+	// Split into lines and normalize heights
 	leftLines := strings.Split(leftContent, "\n")
 	rightLines := strings.Split(rightContent, "\n")
 
-	// Pad shorter pane to match height
-	for len(leftLines) < separatorHeight {
-		leftLines = append(leftLines, strings.Repeat(" ", leftWidth-contentPadding))
-	}
-	for len(rightLines) < separatorHeight {
-		rightLines = append(rightLines, "")
+	// Ensure exact height by padding/truncating
+	leftLines = normalizeLines(leftLines, contentHeight, leftContentWidth)
+	rightLines = normalizeLines(rightLines, contentHeight, rightContentWidth)
+
+	// Determine border colors based on focus
+	leftColor := unfocusedColor
+	rightColor := unfocusedColor
+	if m.focusPane == FocusList {
+		leftColor = focusedColor
+	} else {
+		rightColor = focusedColor
 	}
 
-	// Truncate if too long
-	if len(leftLines) > separatorHeight {
-		leftLines = leftLines[:separatorHeight]
-	}
-	if len(rightLines) > separatorHeight {
-		rightLines = rightLines[:separatorHeight-1]
-		rightLines = append(rightLines, dimStyle.Render("..."))
-	}
+	// Build bordered panes manually
+	leftBox := buildBorderedBox(leftLines, leftContentWidth, leftColor)
+	rightBox := buildBorderedBox(rightLines, rightContentWidth, rightColor)
 
-	leftContent = strings.Join(leftLines, "\n")
-	rightContent = strings.Join(rightLines, "\n")
-
-	// Join horizontally
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftContent, separator, rightContent)
+	// Join with gap
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftBox, strings.Repeat(" ", gap), rightBox)
 }
 
-// renderListPane renders the list content for a given width.
-func (m Model) renderListPane(width int) string {
+// normalizeLines ensures the slice has exactly `height` lines, each padded to `width`.
+func normalizeLines(lines []string, height, width int) []string {
+	result := make([]string, height)
+	for i := 0; i < height; i++ {
+		if i < len(lines) {
+			result[i] = padToWidth(lines[i], width)
+		} else {
+			result[i] = strings.Repeat(" ", width)
+		}
+	}
+	return result
+}
+
+// buildBorderedBox creates a box with rounded borders around content lines.
+func buildBorderedBox(lines []string, contentWidth int, borderColor lipgloss.Color) string {
+	style := lipgloss.NewStyle().Foreground(borderColor)
+
+	// Box drawing chars (rounded)
+	topLeft := style.Render("╭")
+	topRight := style.Render("╮")
+	bottomLeft := style.Render("╰")
+	bottomRight := style.Render("╯")
+	horizontal := style.Render("─")
+	vertical := style.Render("│")
+
 	var b strings.Builder
 
-	// Header
+	// Top border
+	b.WriteString(topLeft)
+	b.WriteString(strings.Repeat(horizontal, contentWidth))
+	b.WriteString(topRight)
+	b.WriteString("\n")
+
+	// Content lines with side borders
+	for _, line := range lines {
+		b.WriteString(vertical)
+		b.WriteString(line)
+		b.WriteString(vertical)
+		b.WriteString("\n")
+	}
+
+	// Bottom border
+	b.WriteString(bottomLeft)
+	b.WriteString(strings.Repeat(horizontal, contentWidth))
+	b.WriteString(bottomRight)
+
+	return b.String()
+}
+
+// padToWidth pads a string to the specified width with spaces.
+// Accounts for ANSI escape codes when calculating visible width.
+func padToWidth(s string, width int) string {
+	visibleLen := lipgloss.Width(s)
+	if visibleLen >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-visibleLen)
+}
+
+// renderListPane renders the list content for a given width (uses default height calc).
+func (m Model) renderListPane(width int) string {
+	height := m.height - 8
+	if height < 10 {
+		height = 15
+	}
+	return m.renderListPaneWithHeight(width, height)
+}
+
+// renderListPaneWithHeight renders the list content for given width and height.
+func (m Model) renderListPaneWithHeight(width, height int) string {
+	var b strings.Builder
+
+	// Header (takes ~2 lines)
 	title := "prog"
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString(fmt.Sprintf("  %d/%d items", len(m.filtered), len(m.items)))
@@ -823,19 +971,23 @@ func (m Model) renderListPane(width int) string {
 	}
 	b.WriteString("\n\n")
 
+	// Footer takes 3 lines (blank + 2 help lines)
+	// So items get: height - 2 (header) - 3 (footer) = height - 5
+	itemsHeight := height - 5
+	if itemsHeight < 3 {
+		itemsHeight = 3
+	}
+
 	// Items
 	if len(m.filtered) == 0 {
 		b.WriteString("No items match filters\n")
 	} else {
-		visibleHeight := m.height - 8
-		if visibleHeight < 5 {
-			visibleHeight = 15
-		}
+		// Calculate visible window - keep cursor in view
 		start := 0
-		if m.cursor >= visibleHeight {
-			start = m.cursor - visibleHeight + 1
+		if m.cursor >= itemsHeight {
+			start = m.cursor - itemsHeight + 1
 		}
-		end := min(start+visibleHeight, len(m.filtered))
+		end := min(start+itemsHeight, len(m.filtered))
 
 		rowWidth := width
 		if rowWidth < 40 {
@@ -851,9 +1003,9 @@ func (m Model) renderListPane(width int) string {
 				line := m.formatItemLinePlain(item, rowWidth)
 				b.WriteString(selectedRowStyle.Width(rowWidth).Render(line))
 			} else {
-				// For non-selected: use styled version
+				// For non-selected: use styled version, also constrained to width
 				line := m.formatItemLineStyled(item, rowWidth)
-				b.WriteString(line)
+				b.WriteString(lipgloss.NewStyle().Width(rowWidth).Render(line))
 			}
 			b.WriteString("\n")
 		}
@@ -862,8 +1014,12 @@ func (m Model) renderListPane(width int) string {
 	// Footer
 	b.WriteString("\n")
 	if m.width >= minSplitWidth {
-		// Split view footer (shorter, no "enter:detail" since details are visible)
-		b.WriteString(helpStyle.Render("j/k:nav s:start d:done b:block L:log n:new"))
+		// Split view footer - show Tab hint and current focus
+		if m.focusPane == FocusList {
+			b.WriteString(helpStyle.Render("j/k:nav  tab:focus detail  s:start d:done L:log n:new"))
+		} else {
+			b.WriteString(helpStyle.Render("j/k:scroll  tab:focus list  s:start d:done L:log"))
+		}
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render("/:search p:project 1-5:status  q:quit"))
 	} else {
@@ -981,14 +1137,19 @@ func (m Model) activeFiltersString() string {
 }
 
 // detailView renders the detail pane. If width is 0, uses full terminal width.
-// If width > 0, constrains rendering to that width (for split view).
+// If width > 0, constrains rendering to that width (for split view) and applies scroll.
 func (m Model) detailView(width int) string {
+	return m.detailViewWithHeight(width, 0)
+}
+
+// detailViewWithHeight renders the detail pane with explicit height constraint.
+func (m Model) detailViewWithHeight(width, height int) string {
 	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
 		return "No task selected"
 	}
 
 	item := m.filtered[m.cursor]
-	var b strings.Builder
+	var lines []string
 
 	// Helper to truncate text if we're in constrained width mode
 	truncate := func(s string, maxLen int) string {
@@ -1018,18 +1179,19 @@ func (m Model) detailView(width int) string {
 	if width > 0 {
 		title = truncate(title, effectiveWidth-4) // Leave room for icon and spacing
 	}
-	b.WriteString(iconStyled + " " + titleStyle.Render(title) + "\n\n")
+	lines = append(lines, iconStyled+" "+titleStyle.Render(title))
+	lines = append(lines, "")
 
-	b.WriteString(detailLabelStyle.Render("ID:       ") + item.ID + "\n")
-	b.WriteString(detailLabelStyle.Render("Type:     ") + string(item.Type) + "\n")
-	b.WriteString(detailLabelStyle.Render("Project:  ") + truncate(item.Project, effectiveWidth-10) + "\n")
+	lines = append(lines, detailLabelStyle.Render("ID:       ")+item.ID)
+	lines = append(lines, detailLabelStyle.Render("Type:     ")+string(item.Type))
+	lines = append(lines, detailLabelStyle.Render("Project:  ")+truncate(item.Project, effectiveWidth-10))
 
 	statusStyled := lipgloss.NewStyle().Foreground(color).Render(string(item.Status))
-	b.WriteString(detailLabelStyle.Render("Status:   ") + statusStyled + "\n")
-	b.WriteString(detailLabelStyle.Render("Priority: ") + fmt.Sprintf("%d", item.Priority) + "\n")
+	lines = append(lines, detailLabelStyle.Render("Status:   ")+statusStyled)
+	lines = append(lines, detailLabelStyle.Render("Priority: ")+fmt.Sprintf("%d", item.Priority))
 
 	if item.ParentID != nil {
-		b.WriteString(detailLabelStyle.Render("Parent:   ") + *item.ParentID + "\n")
+		lines = append(lines, detailLabelStyle.Render("Parent:   ")+*item.ParentID)
 	}
 
 	// Labels
@@ -1041,47 +1203,76 @@ func (m Model) detailView(width int) string {
 			}
 			labelsStr += labelStyle.Render("[" + lbl + "]")
 		}
-		b.WriteString(detailLabelStyle.Render("Labels:   ") + truncate(labelsStr, effectiveWidth-10) + "\n")
+		lines = append(lines, detailLabelStyle.Render("Labels:   ")+truncate(labelsStr, effectiveWidth-10))
 	}
 
 	// Dependencies
 	if len(m.detailDeps) > 0 {
-		b.WriteString("\n" + detailLabelStyle.Render("Blocked by:") + "\n")
+		lines = append(lines, "")
+		lines = append(lines, detailLabelStyle.Render("Blocked by:"))
 		for _, dep := range m.detailDeps {
-			b.WriteString("  " + dimStyle.Render("→") + " " + dep + "\n")
+			lines = append(lines, "  "+dimStyle.Render("→")+" "+dep)
 		}
 	}
 
 	// Description
 	if item.Description != "" {
-		b.WriteString("\n" + detailLabelStyle.Render("Description:") + "\n")
+		lines = append(lines, "")
+		lines = append(lines, detailLabelStyle.Render("Description:"))
+		// Split description into lines
 		desc := item.Description
-		if width > 0 && len(desc) > effectiveWidth*3 { // Allow ~3 lines of description
-			desc = truncate(desc, effectiveWidth*3)
+		descLines := strings.Split(desc, "\n")
+		for _, dl := range descLines {
+			if width > 0 && len(dl) > effectiveWidth {
+				dl = truncate(dl, effectiveWidth)
+			}
+			lines = append(lines, dl)
 		}
-		b.WriteString(desc + "\n")
 	}
 
 	// Logs
 	if len(m.detailLogs) > 0 {
-		b.WriteString("\n" + detailLabelStyle.Render("Logs:") + "\n")
+		lines = append(lines, "")
+		lines = append(lines, detailLabelStyle.Render("Logs:"))
 		for _, log := range m.detailLogs {
 			ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
 			msg := log.Message
 			if width > 0 {
 				msg = truncate(msg, effectiveWidth-20) // Leave room for timestamp
 			}
-			b.WriteString("  " + ts + " " + msg + "\n")
+			lines = append(lines, "  "+ts+" "+msg)
 		}
 	}
 
-	// Footer (only for full-screen detail view)
+	// For full-screen detail view (width == 0), just return all content
 	if width == 0 {
-		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("esc:back  s:start d:done b:block L:log c:cancel a:add-dep  q:quit"))
+		lines = append(lines, "")
+		lines = append(lines, helpStyle.Render("esc:back  s:start d:done b:block L:log c:cancel a:add-dep  q:quit"))
+		return strings.Join(lines, "\n")
 	}
 
-	return b.String()
+	// For split view, apply scroll offset and height constraint
+	totalLines := len(lines)
+	visibleHeight := height
+	if visibleHeight <= 0 {
+		visibleHeight = totalLines // No height constraint
+	}
+
+	// Bound scroll to valid range (can't scroll past content)
+	maxScroll := max(0, totalLines-visibleHeight)
+	scroll := m.detailScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+
+	// Apply scroll offset - show window of lines
+	start := scroll
+	end := min(start+visibleHeight, totalLines)
+	if start < len(lines) {
+		lines = lines[start:end]
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // Run starts the TUI.

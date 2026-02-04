@@ -74,6 +74,7 @@ var (
 	flagAddLabels        []string
 	flagFilterLabels     []string
 	flagDoD              string
+	flagDesc             string
 )
 
 func openDB() (*db.DB, error) {
@@ -148,7 +149,8 @@ Examples:
   prog add "Critical fix" --priority 1
   prog add "Subtask" --parent ep-abc123
   prog add "Dependency" --blocks ts-xyz789
-  prog add "Bug fix" -p myproject -l bug -l urgent`,
+  prog add "Bug fix" -p myproject -l bug -l urgent
+  prog add "Feature" -p myproject -d "Detailed description here"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if flagProject == "" {
@@ -180,6 +182,11 @@ Examples:
 		// Set definition of done if specified
 		if cmd.Flags().Changed("dod") && flagDoD != "" {
 			item.DefinitionOfDone = &flagDoD
+		}
+
+		// Set description if specified
+		if cmd.Flags().Changed("desc") && flagDesc != "" {
+			item.Description = flagDesc
 		}
 
 		if err := database.CreateItem(item); err != nil {
@@ -2094,6 +2101,7 @@ func init() {
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
 	addCmd.Flags().StringArrayVarP(&flagAddLabels, "label", "l", nil, "Label to attach (can be repeated)")
 	addCmd.Flags().StringVar(&flagDoD, "dod", "", "Definition of done (completion criteria)")
+	addCmd.Flags().StringVarP(&flagDesc, "desc", "d", "", "Description body")
 
 	// list flags
 	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
@@ -2705,9 +2713,10 @@ prog done <id>           # Mark complete
 prog block <id> "why"    # Mark blocked
 
 # Creating
-prog add "title" -p project    # New task
-prog add "title" -l bug        # With label
-prog add "title" -e            # New epic
+prog add "title" -p project           # New task
+prog add "title" -d "description"     # With description
+prog add "title" -l bug               # With label
+prog add "title" -e                   # New epic
 
 # Editing
 prog append <id> "text"        # Add to description

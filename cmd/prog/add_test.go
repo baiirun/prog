@@ -183,6 +183,36 @@ func TestAddCmd_BlocksFlag_NonexistentTarget(t *testing.T) {
 	}
 }
 
+func TestAddCmd_DescFlag(t *testing.T) {
+	database := setupTestDB(t)
+
+	// Create a task with description (simulates --desc flag)
+	desc := "This is the task description"
+	task := &model.Item{
+		ID:          "ts-withdesc",
+		Project:     "test",
+		Type:        model.ItemTypeTask,
+		Title:       "Task with Description",
+		Description: desc,
+		Status:      model.StatusOpen,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := database.CreateItem(task); err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	// Verify the description was set
+	got, err := database.GetItem(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if got.Description != desc {
+		t.Errorf("description = %q, want %q", got.Description, desc)
+	}
+}
+
 func TestAddCmd_BothFlags(t *testing.T) {
 	database := setupTestDB(t)
 

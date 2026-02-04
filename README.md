@@ -51,6 +51,9 @@ prog onboard
 prog add "Implement user authentication" -p myproject --priority 1
 # Output: ts-a1b2c3
 
+# Create a task with description
+prog add "Add login endpoint" -p myproject -d "Implement POST /login with JWT auth"
+
 # Create a task with Definition of Done
 prog add "Add login endpoint" -p myproject --dod "Tests pass; Handles invalid credentials; Rate limited"
 
@@ -128,6 +131,7 @@ prog done ts-a1b2c3
 | `--priority` | add | Priority: 1=high, 2=medium (default), 3=low |
 | `--parent` | add, list | Set parent epic at creation / filter by parent |
 | `--blocks` | add | Set task this will block at creation |
+| `-d, --desc` | add | Description body |
 | `--dod` | add, edit | Definition of done (completion criteria for agents) |
 | `--status` | list | Filter by status |
 | `--type` | list | Filter by item type (task, epic) |

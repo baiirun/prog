@@ -151,6 +151,10 @@ Examples:
   prog add "Bug fix" -p myproject -l bug -l urgent`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagProject == "" {
+			return fmt.Errorf("project is required (-p)")
+		}
+
 		database, err := openDB()
 		if err != nil {
 			return err

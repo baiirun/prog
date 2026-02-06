@@ -128,6 +128,94 @@ func TestReadyItems(t *testing.T) {
 	}
 }
 
+func TestReadyItems_CanceledBlockerUnblocks(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
+	task := createTestItemWithProject(t, db, "Blocked Task", "test", model.StatusOpen, 1)
+
+	if err := db.AddDep(task.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Task should not be ready (blocked by open blocker)
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to get ready: %v", err)
+	}
+	readyIDs := map[string]bool{}
+	for _, r := range ready {
+		readyIDs[r.ID] = true
+	}
+	if readyIDs[task.ID] {
+		t.Error("task should not be ready while blocker is open")
+	}
+
+	// Cancel the blocker — task should now be ready
+	if err := db.UpdateStatus(blocker.ID, model.StatusCanceled); err != nil {
+		t.Fatalf("failed to cancel blocker: %v", err)
+	}
+
+	ready, err = db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to get ready after cancel: %v", err)
+	}
+	readyIDs = map[string]bool{}
+	for _, r := range ready {
+		readyIDs[r.ID] = true
+	}
+	if !readyIDs[task.ID] {
+		t.Error("task should be ready after blocker is canceled")
+	}
+}
+
+func TestListItemsFiltered_CanceledBlockerResolvesHasBlockers(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
+	task := createTestItemWithProject(t, db, "Blocked Task", "test", model.StatusOpen, 1)
+
+	if err := db.AddDep(task.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Task should appear in has-blockers list
+	items, err := db.ListItemsFiltered(ListFilter{HasBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != task.ID {
+		t.Errorf("expected task in has-blockers list, got %v", items)
+	}
+
+	// Cancel the blocker
+	if err := db.UpdateStatus(blocker.ID, model.StatusCanceled); err != nil {
+		t.Fatalf("failed to cancel: %v", err)
+	}
+
+	// Task should no longer appear in has-blockers list
+	items, err = db.ListItemsFiltered(ListFilter{HasBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list after cancel: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 items with blockers after cancel, got %d", len(items))
+	}
+
+	// Task should appear in no-blockers list
+	items, err = db.ListItemsFiltered(ListFilter{NoBlockers: true})
+	if err != nil {
+		t.Fatalf("failed to list no-blockers: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, item := range items {
+		ids[item.ID] = true
+	}
+	if !ids[task.ID] {
+		t.Error("task should appear in no-blockers list after blocker is canceled")
+	}
+}
+
 func TestReadyItems_ProjectFilter(t *testing.T) {
 	db := setupTestDB(t)
 

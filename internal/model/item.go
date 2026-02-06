@@ -74,7 +74,7 @@ type Log struct {
 }
 
 // Dep represents a dependency relationship where ItemID depends on DependsOn.
-// ItemID is blocked until DependsOn has status "done".
+// ItemID is blocked until DependsOn reaches a terminal status ("done" or "canceled").
 type Dep struct {
 	ItemID    string
 	DependsOn string

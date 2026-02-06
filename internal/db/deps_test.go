@@ -142,6 +142,48 @@ func TestGetDeps_Empty(t *testing.T) {
 	}
 }
 
+func TestHasUnmetDeps_CanceledDepResolved(t *testing.T) {
+	db := setupTestDB(t)
+
+	blocker := createTestItem(t, db, "Blocker")
+	task := createTestItem(t, db, "Blocked Task")
+
+	if err := db.AddDep(task.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Blocker is open — task should have unmet deps
+	unmet, err := db.HasUnmetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("failed to check deps: %v", err)
+	}
+	if !unmet {
+		t.Error("expected unmet deps when blocker is open")
+	}
+
+	// Cancel the blocker — task should no longer have unmet deps
+	if err := db.UpdateStatus(blocker.ID, model.StatusCanceled); err != nil {
+		t.Fatalf("failed to cancel blocker: %v", err)
+	}
+
+	unmet, err = db.HasUnmetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("failed to check deps after cancel: %v", err)
+	}
+	if unmet {
+		t.Error("expected no unmet deps when blocker is canceled")
+	}
+
+	// Dep row should still exist (graph preserved)
+	deps, err := db.GetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("failed to get deps: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != blocker.ID {
+		t.Errorf("dep row should be preserved after cancel, got %v", deps)
+	}
+}
+
 func TestGetAllDeps(t *testing.T) {
 	db := setupTestDB(t)
 

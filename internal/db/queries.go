@@ -65,11 +65,11 @@ func (db *DB) ListItemsFiltered(filter ListFilter) ([]model.Item, error) {
 	}
 	if filter.HasBlockers {
 		// Items with unresolved blockers (dependencies that aren't done)
-		query += ` AND id IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status != 'done')`
+		query += ` AND id IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status NOT IN ('done', 'canceled'))`
 	}
 	if filter.NoBlockers {
 		// Items with no blockers (either no deps, or all deps are done)
-		query += ` AND id NOT IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status != 'done')`
+		query += ` AND id NOT IN (SELECT d.item_id FROM deps d JOIN items i ON d.depends_on = i.id WHERE i.status NOT IN ('done', 'canceled'))`
 	}
 	if len(filter.Labels) > 0 {
 		// Items must have ALL specified labels (AND semantics)
@@ -112,7 +112,7 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 		  AND id NOT IN (
 		    SELECT d.item_id FROM deps d
 		    JOIN items i ON d.depends_on = i.id
-		    WHERE i.status != 'done'
+		    WHERE i.status NOT IN ('done', 'canceled')
 		  )`
 	args := []any{}
 

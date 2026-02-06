@@ -50,7 +50,7 @@ func (db *DB) HasUnmetDeps(itemID string) (bool, error) {
 	err := db.QueryRow(`
 		SELECT COUNT(*) FROM deps d
 		JOIN items i ON d.depends_on = i.id
-		WHERE d.item_id = ? AND i.status != 'done'`, itemID).Scan(&count)
+		WHERE d.item_id = ? AND i.status NOT IN ('done', 'canceled')`, itemID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check dependencies: %w", err)
 	}

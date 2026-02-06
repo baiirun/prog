@@ -75,6 +75,7 @@ var (
 	flagFilterLabels     []string
 	flagDoD              string
 	flagDesc             string
+	flagJSON             bool
 )
 
 func openDB() (*db.DB, error) {
@@ -241,7 +242,8 @@ Examples:
   prog list --blocked-by ts-abc123
   prog list --has-blockers
   prog list --no-blockers
-  prog list -l bug -l urgent`,
+  prog list -l bug -l urgent
+  prog list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -280,6 +282,46 @@ Examples:
 			return err
 		}
 
+		if flagJSON {
+			if len(items) == 0 {
+				fmt.Println("[]")
+				return nil
+			}
+			output := make([]ItemListJSON, 0, len(items))
+			for _, item := range items {
+				labels := item.Labels
+				if labels == nil {
+					labels = []string{}
+				}
+				deps, err := database.GetDeps(item.ID)
+				if err != nil {
+					return err
+				}
+				if deps == nil {
+					deps = []string{}
+				}
+				output = append(output, ItemListJSON{
+					ID:               item.ID,
+					Title:            item.Title,
+					Type:             string(item.Type),
+					Status:           string(item.Status),
+					Priority:         item.Priority,
+					Project:          item.Project,
+					Parent:           item.ParentID,
+					Description:      item.Description,
+					DefinitionOfDone: item.DefinitionOfDone,
+					Labels:           labels,
+					Dependencies:     deps,
+				})
+			}
+			b, err := json.MarshalIndent(output, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %w", err)
+			}
+			fmt.Println(string(b))
+			return nil
+		}
+
 		printItemsTable(items)
 		return nil
 	},
@@ -299,7 +341,8 @@ Results are sorted by priority (1=high first).
 Examples:
   prog ready
   prog ready -p myproject
-  prog ready -l bug`,
+  prog ready -l bug
+  prog ready --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -313,6 +356,10 @@ Examples:
 		}
 
 		if len(items) == 0 {
+			if flagJSON {
+				fmt.Println("[]")
+				return nil
+			}
 			fmt.Println("No ready tasks")
 			return nil
 		}
@@ -320,6 +367,25 @@ Examples:
 		// Populate labels for display
 		if err := database.PopulateItemLabels(items); err != nil {
 			return err
+		}
+
+		if flagJSON {
+			output := make([]ItemReadyJSON, 0, len(items))
+			for _, item := range items {
+				output = append(output, ItemReadyJSON{
+					ID:       item.ID,
+					Title:    item.Title,
+					Priority: item.Priority,
+					Type:     string(item.Type),
+					Parent:   item.ParentID,
+				})
+			}
+			b, err := json.MarshalIndent(output, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %w", err)
+			}
+			fmt.Println(string(b))
+			return nil
 		}
 
 		printReadyTable(items)
@@ -333,8 +399,9 @@ var showCmd = &cobra.Command{
 	Long: `Show full details for a task including description, logs, dependencies,
 and suggested concepts for context retrieval.
 
-Example:
-  prog show ts-a1b2c3`,
+Examples:
+  prog show ts-a1b2c3
+  prog show ts-a1b2c3 --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
@@ -371,6 +438,43 @@ Example:
 		concepts, err := database.GetRelatedConcepts(args[0])
 		if err != nil {
 			return err
+		}
+
+		if flagJSON {
+			labels := item.Labels
+			if labels == nil {
+				labels = []string{}
+			}
+			if deps == nil {
+				deps = []string{}
+			}
+			logEntries := make([]LogJSON, 0, len(logs))
+			for _, l := range logs {
+				logEntries = append(logEntries, LogJSON{
+					Message:   l.Message,
+					CreatedAt: l.CreatedAt.Format(time.RFC3339),
+				})
+			}
+			output := ItemShowJSON{
+				ID:               item.ID,
+				Title:            item.Title,
+				Type:             string(item.Type),
+				Status:           string(item.Status),
+				Priority:         item.Priority,
+				Project:          item.Project,
+				Parent:           item.ParentID,
+				Description:      item.Description,
+				DefinitionOfDone: item.DefinitionOfDone,
+				Labels:           labels,
+				Dependencies:     deps,
+				Logs:             logEntries,
+			}
+			b, err := json.MarshalIndent(output, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %w", err)
+			}
+			fmt.Println(string(b))
+			return nil
 		}
 
 		printItemDetail(item, logs, deps, concepts)
@@ -2112,6 +2216,7 @@ func init() {
 	listCmd.Flags().BoolVar(&flagHasBlockers, "has-blockers", false, "Show only items with unresolved blockers")
 	listCmd.Flags().BoolVar(&flagNoBlockers, "no-blockers", false, "Show only items with no blockers")
 	listCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
+	listCmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	// onboard flags
 	onboardCmd.Flags().BoolVar(&flagForce, "force", false, "Replace existing Task Tracking section")
@@ -2120,8 +2225,12 @@ func init() {
 	editCmd.Flags().StringVar(&flagEditTitle, "title", "", "New title for the task")
 	editCmd.Flags().StringVar(&flagDoD, "dod", "", "Definition of done (use \"\" to clear)")
 
+	// show flags
+	showCmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
+
 	// ready flags
 	readyCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
+	readyCmd.Flags().BoolVar(&flagJSON, "json", false, "Output as JSON")
 
 	// status flags
 	statusCmd.Flags().BoolVar(&flagStatusAll, "all", false, "Show all ready tasks (default: limit to 10)")
@@ -2463,6 +2572,52 @@ func printLearnings(learnings []model.Learning) {
 			fmt.Printf("Task: %s\n", *l.TaskID)
 		}
 	}
+}
+
+// ItemReadyJSON is the JSON serialization format for ready items.
+type ItemReadyJSON struct {
+	ID       string  `json:"id"`
+	Title    string  `json:"title"`
+	Priority int     `json:"priority"`
+	Type     string  `json:"type"`
+	Parent   *string `json:"parent"`
+}
+
+// ItemShowJSON is the JSON serialization format for show (full detail).
+type ItemShowJSON struct {
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Type             string    `json:"type"`
+	Status           string    `json:"status"`
+	Priority         int       `json:"priority"`
+	Project          string    `json:"project"`
+	Parent           *string   `json:"parent"`
+	Description      string    `json:"description"`
+	DefinitionOfDone *string   `json:"definition_of_done"`
+	Labels           []string  `json:"labels"`
+	Dependencies     []string  `json:"dependencies"`
+	Logs             []LogJSON `json:"logs"`
+}
+
+// ItemListJSON is the JSON serialization format for list (show schema minus logs).
+type ItemListJSON struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	Priority         int      `json:"priority"`
+	Project          string   `json:"project"`
+	Parent           *string  `json:"parent"`
+	Description      string   `json:"description"`
+	DefinitionOfDone *string  `json:"definition_of_done"`
+	Labels           []string `json:"labels"`
+	Dependencies     []string `json:"dependencies"`
+}
+
+// LogJSON is the JSON serialization format for log entries.
+type LogJSON struct {
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
 }
 
 // LearningJSON is the JSON serialization format for learnings.

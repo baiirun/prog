@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -290,12 +291,14 @@ func TestProjectStatus_Empty(t *testing.T) {
 func createTestEpic(t *testing.T, db *DB, title, project string) *model.Item {
 	t.Helper()
 	item := &model.Item{
-		ID:       model.GenerateID(model.ItemTypeEpic),
-		Project:  project,
-		Type:     model.ItemTypeEpic,
-		Title:    title,
-		Status:   model.StatusOpen,
-		Priority: 2,
+		ID:        model.GenerateID(model.ItemTypeEpic),
+		Project:   project,
+		Type:      model.ItemTypeEpic,
+		Title:     title,
+		Status:    model.StatusOpen,
+		Priority:  2,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 	if err := db.CreateItem(item); err != nil {
 		t.Fatalf("failed to create epic: %v", err)
@@ -710,5 +713,535 @@ func TestReadyItems_WithDefinitionOfDone(t *testing.T) {
 	}
 	if !foundDoD {
 		t.Error("item with DoD not found in ready list")
+	}
+}
+
+// --- Derived Epic Status Tests ---
+
+func TestDeriveEpicStatus_NoChildren(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Empty Epic", "test")
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusOpen {
+		t.Errorf("empty epic status = %q, want open", status)
+	}
+}
+
+func TestDeriveEpicStatus_AllChildrenDone(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusDone, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusDone, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusDone {
+		t.Errorf("all-done epic status = %q, want done", status)
+	}
+}
+
+func TestDeriveEpicStatus_AllChildrenCanceled(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusCanceled, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusDone {
+		t.Errorf("all-canceled epic status = %q, want done", status)
+	}
+}
+
+func TestDeriveEpicStatus_MixDoneAndCanceled(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusDone, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusCanceled, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusDone {
+		t.Errorf("done+canceled epic status = %q, want done", status)
+	}
+}
+
+func TestDeriveEpicStatus_InProgressChild(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusInProgress, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusInProgress {
+		t.Errorf("in_progress child epic status = %q, want in_progress", status)
+	}
+}
+
+func TestDeriveEpicStatus_DoneChildWithOpenRemaining(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusDone, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	// Has a done child but not all resolved => in_progress
+	if status != model.StatusInProgress {
+		t.Errorf("partial-done epic status = %q, want in_progress", status)
+	}
+}
+
+func TestDeriveEpicStatus_AllChildrenBlocked(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusBlocked, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusBlocked, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusBlocked {
+		t.Errorf("all-blocked epic status = %q, want blocked", status)
+	}
+}
+
+func TestDeriveEpicStatus_BlockedWithDoneChildren(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusDone, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusBlocked, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	// Done children exist but remaining are blocked => blocked
+	if status != model.StatusBlocked {
+		t.Errorf("done+blocked epic status = %q, want blocked", status)
+	}
+}
+
+func TestDeriveEpicStatus_AllOpen(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusOpen {
+		t.Errorf("all-open epic status = %q, want open", status)
+	}
+}
+
+func TestDeriveEpicStatus_ReviewingChild(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusReviewing, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	// Reviewing counts as active progress
+	if status != model.StatusInProgress {
+		t.Errorf("reviewing-child epic status = %q, want in_progress", status)
+	}
+}
+
+func TestDeriveEpicStatus_ManualOverrideDone(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	// Add an open child
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually mark epic done (force-close)
+	if err := db.UpdateStatus(epic.ID, model.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	// Manual done overrides derived status
+	if status != model.StatusDone {
+		t.Errorf("manually-done epic status = %q, want done", status)
+	}
+}
+
+func TestDeriveEpicStatus_ManualOverrideCanceled(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpdateStatus(epic.ID, model.StatusCanceled); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusCanceled {
+		t.Errorf("manually-canceled epic status = %q, want canceled", status)
+	}
+}
+
+func TestDeriveEpicStatus_ReopenedChildRevertsEpic(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task1 := createTestItemWithProject(t, db, "Task 1", "test", model.StatusDone, 2)
+	task2 := createTestItemWithProject(t, db, "Task 2", "test", model.StatusDone, 2)
+	if err := db.SetParent(task1.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetParent(task2.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify epic is done
+	status, _ := db.DeriveEpicStatus(epic.ID)
+	if status != model.StatusDone {
+		t.Fatalf("precondition: epic should be done, got %q", status)
+	}
+
+	// Reopen task1
+	if err := db.UpdateStatus(task1.ID, model.StatusOpen); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	// One done child + one open child => in_progress
+	if status != model.StatusInProgress {
+		t.Errorf("reopened-child epic status = %q, want in_progress", status)
+	}
+}
+
+func TestGetItem_EpicDerivedStatus(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusDone, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := db.GetItem(epic.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	// GetItem should return derived status
+	if item.Status != model.StatusDone {
+		t.Errorf("GetItem epic status = %q, want done", item.Status)
+	}
+}
+
+func TestListItemsFiltered_EpicDerivedStatus(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusInProgress, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filter by in_progress should include the epic (derived in_progress, stored open)
+	inProg := model.StatusInProgress
+	items, err := db.ListItemsFiltered(ListFilter{Project: "test", Status: &inProg})
+	if err != nil {
+		t.Fatalf("ListItemsFiltered: %v", err)
+	}
+
+	found := false
+	for _, item := range items {
+		if item.ID == epic.ID {
+			found = true
+			if item.Status != model.StatusInProgress {
+				t.Errorf("epic status in list = %q, want in_progress", item.Status)
+			}
+		}
+	}
+	if !found {
+		t.Error("epic with derived in_progress not found in in_progress filtered list")
+	}
+}
+
+func TestReadyItems_ExcludesEpics(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Open Task", "test", model.StatusOpen, 2)
+
+	_ = epic // epic is open with no deps, but should not appear in ready
+
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("ReadyItems: %v", err)
+	}
+
+	for _, item := range ready {
+		if item.ID == epic.ID {
+			t.Error("epic should not appear in ready items")
+		}
+	}
+
+	if len(ready) != 1 || ready[0].ID != task.ID {
+		t.Errorf("expected 1 ready task, got %d", len(ready))
+	}
+}
+
+func TestReadyItems_EpicDepResolvesWhenChildrenDone(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic with one child task
+	epic := createTestEpic(t, db, "Phase 1", "test")
+	epicChild := createTestItemWithProject(t, db, "Phase 1 Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(epicChild.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a task that depends on the epic
+	phase2Task := createTestItemWithProject(t, db, "Phase 2 Task", "test", model.StatusOpen, 1)
+	if err := db.AddDep(phase2Task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 2 task should NOT be ready (epic child is open)
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("ReadyItems: %v", err)
+	}
+	for _, r := range ready {
+		if r.ID == phase2Task.ID {
+			t.Error("phase 2 task should not be ready while epic child is open")
+		}
+	}
+
+	// Complete the epic's child
+	if err := db.UpdateStatus(epicChild.ID, model.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now phase 2 task should be ready (epic's derived status is done)
+	ready, err = db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("ReadyItems: %v", err)
+	}
+	found := false
+	for _, r := range ready {
+		if r.ID == phase2Task.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("phase 2 task should be ready after epic's children are all done")
+	}
+}
+
+func TestProjectStatus_EpicDerivedCounts(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create epic with in_progress child (stored: open, derived: in_progress)
+	epic := createTestEpic(t, db, "Epic", "test")
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusInProgress, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := db.ProjectStatus("test")
+	if err != nil {
+		t.Fatalf("ProjectStatus: %v", err)
+	}
+
+	// Epic should count as in_progress (derived), not open (stored)
+	// Items: epic (derived in_progress) + task (in_progress) = 2 in_progress
+	if report.InProgress != 2 {
+		t.Errorf("in_progress count = %d, want 2 (task + epic)", report.InProgress)
+	}
+	if report.Open != 0 {
+		t.Errorf("open count = %d, want 0 (epic should be derived in_progress)", report.Open)
+	}
+}
+
+// TestDeriveAndDeps_Consistency verifies the two derivation paths (Go-side
+// DeriveEpicStatus and SQL-side depUnresolvedExpr) agree on whether an epic
+// is "resolved". For every child-status combination where DeriveEpicStatus
+// returns done or canceled, HasUnmetDeps must return false, and vice versa.
+func TestDeriveAndDeps_Consistency(t *testing.T) {
+	cases := []struct {
+		name          string
+		childStatuses []model.Status
+		wantResolved  bool // true = epic derived done/canceled
+	}{
+		{"all done", []model.Status{model.StatusDone, model.StatusDone}, true},
+		{"all canceled", []model.Status{model.StatusCanceled}, true},
+		{"done+canceled", []model.Status{model.StatusDone, model.StatusCanceled}, true},
+		{"all open", []model.Status{model.StatusOpen}, false},
+		{"one open one done", []model.Status{model.StatusOpen, model.StatusDone}, false},
+		{"in_progress", []model.Status{model.StatusInProgress}, false},
+		{"blocked", []model.Status{model.StatusBlocked}, false},
+		{"reviewing", []model.Status{model.StatusReviewing}, false},
+		{"open+in_progress+done", []model.Status{model.StatusOpen, model.StatusInProgress, model.StatusDone}, false},
+		{"blocked+done", []model.Status{model.StatusBlocked, model.StatusDone}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTestDB(t)
+
+			epic := createTestEpic(t, db, "Epic", "test")
+			for i, s := range tc.childStatuses {
+				child := createTestItemWithProject(t, db, fmt.Sprintf("Child %d", i), "test", s, 2)
+				if err := db.SetParent(child.ID, epic.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Create a downstream task that depends on the epic
+			downstream := createTestItemWithProject(t, db, "Downstream", "test", model.StatusOpen, 1)
+			if err := db.AddDep(downstream.ID, epic.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			derived, err := db.DeriveEpicStatus(epic.ID)
+			if err != nil {
+				t.Fatalf("DeriveEpicStatus: %v", err)
+			}
+			epicResolved := derived == model.StatusDone || derived == model.StatusCanceled
+
+			unmet, err := db.HasUnmetDeps(downstream.ID)
+			if err != nil {
+				t.Fatalf("HasUnmetDeps: %v", err)
+			}
+			depsResolved := !unmet
+
+			if epicResolved != depsResolved {
+				t.Errorf("derivation paths diverge: DeriveEpicStatus=%q (resolved=%v) but HasUnmetDeps=%v (resolved=%v)",
+					derived, epicResolved, unmet, depsResolved)
+			}
+			if epicResolved != tc.wantResolved {
+				t.Errorf("resolved=%v, want %v (derived=%q)", epicResolved, tc.wantResolved, derived)
+			}
+		})
+	}
+}
+
+func TestHasUnmetDeps_EpicDepResolvedByChildren(t *testing.T) {
+	db := setupTestDB(t)
+
+	epic := createTestEpic(t, db, "Epic", "test")
+	epicChild := createTestItemWithProject(t, db, "Child", "test", model.StatusOpen, 2)
+	if err := db.SetParent(epicChild.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	task := createTestItemWithProject(t, db, "Downstream", "test", model.StatusOpen, 1)
+	if err := db.AddDep(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Epic child is open => epic is unresolved
+	unmet, err := db.HasUnmetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("HasUnmetDeps: %v", err)
+	}
+	if !unmet {
+		t.Error("expected unmet deps when epic child is open")
+	}
+
+	// Complete the child => epic derived done => dep resolved
+	if err := db.UpdateStatus(epicChild.ID, model.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	unmet, err = db.HasUnmetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("HasUnmetDeps: %v", err)
+	}
+	if unmet {
+		t.Error("expected no unmet deps after epic child completed")
 	}
 }

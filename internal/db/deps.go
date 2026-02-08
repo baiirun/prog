@@ -2,6 +2,8 @@ package db
 
 import (
 	"fmt"
+
+	"github.com/baiirun/prog/internal/model"
 )
 
 // AddDep adds a dependency between items.
@@ -13,7 +15,7 @@ func (db *DB) AddDep(itemID, dependsOnID string) error {
 		return fmt.Errorf("failed to verify items: %w", err)
 	}
 	if count != 2 {
-		return fmt.Errorf("one or both items not found: %s, %s (use 'tasks list' to see available items)", itemID, dependsOnID)
+		return fmt.Errorf("one or both items not found: %s, %s (use 'prog list' to see available items)", itemID, dependsOnID)
 	}
 
 	_, err = db.Exec(`
@@ -44,13 +46,15 @@ func (db *DB) GetDeps(itemID string) ([]string, error) {
 	return deps, rows.Err()
 }
 
-// HasUnmetDeps returns true if the item has dependencies that are not done.
+// HasUnmetDeps returns true if the item has dependencies that are not resolved.
+// A dependency is resolved when its status is done/canceled, or it's an epic
+// whose children are all done/canceled (derived epic status).
 func (db *DB) HasUnmetDeps(itemID string) (bool, error) {
 	var count int
 	err := db.QueryRow(`
 		SELECT COUNT(*) FROM deps d
 		JOIN items i ON d.depends_on = i.id
-		WHERE d.item_id = ? AND i.status NOT IN ('done', 'canceled')`, itemID).Scan(&count)
+		WHERE d.item_id = ? AND `+depUnresolvedExpr, itemID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check dependencies: %w", err)
 	}
@@ -68,11 +72,12 @@ type DepEdge struct {
 }
 
 // GetAllDeps returns all dependency edges with item details, optionally filtered by project.
+// Epic statuses are derived from child state, consistent with DeriveEpicStatus.
 func (db *DB) GetAllDeps(project string) ([]DepEdge, error) {
 	query := `
 		SELECT
-			d.item_id, i1.title, i1.status,
-			d.depends_on, i2.title, i2.status
+			d.item_id, i1.title, i1.status, i1.type,
+			d.depends_on, i2.title, i2.status, i2.type
 		FROM deps d
 		JOIN items i1 ON d.item_id = i1.id
 		JOIN items i2 ON d.depends_on = i2.id`
@@ -93,9 +98,25 @@ func (db *DB) GetAllDeps(project string) ([]DepEdge, error) {
 	var edges []DepEdge
 	for rows.Next() {
 		var e DepEdge
-		if err := rows.Scan(&e.ItemID, &e.ItemTitle, &e.ItemStatus,
-			&e.DependsOnID, &e.DependsOnTitle, &e.DependsOnStatus); err != nil {
+		var itemType, depType string
+		if err := rows.Scan(&e.ItemID, &e.ItemTitle, &e.ItemStatus, &itemType,
+			&e.DependsOnID, &e.DependsOnTitle, &e.DependsOnStatus, &depType); err != nil {
 			return nil, fmt.Errorf("failed to scan dep edge: %w", err)
+		}
+		// Apply derived epic status for both sides of the edge
+		if itemType == string(model.ItemTypeEpic) {
+			derived, err := db.deriveFromChildren(e.ItemID, model.Status(e.ItemStatus))
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive epic status for %s: %w", e.ItemID, err)
+			}
+			e.ItemStatus = string(derived)
+		}
+		if depType == string(model.ItemTypeEpic) {
+			derived, err := db.deriveFromChildren(e.DependsOnID, model.Status(e.DependsOnStatus))
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive epic status for %s: %w", e.DependsOnID, err)
+			}
+			e.DependsOnStatus = string(derived)
 		}
 		edges = append(edges, e)
 	}

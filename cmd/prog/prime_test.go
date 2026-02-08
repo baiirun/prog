@@ -149,7 +149,7 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 		"prog start",
 		"prog log",
 		"prog done",
-		"prog block",
+		"prog open",
 		"prog add",
 		"prog append",
 		"prog context",

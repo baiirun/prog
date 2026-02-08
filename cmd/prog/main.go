@@ -614,16 +614,16 @@ Example:
 	},
 }
 
-var blockCmd = &cobra.Command{
-	Use:   "block <id> <reason>",
-	Short: "Mark a task as blocked",
-	Long: `Mark a task as blocked and log the reason.
+var openCmd = &cobra.Command{
+	Use:   "open <id>",
+	Short: "Reopen a task (set status back to open)",
+	Long: `Set a task's status back to open.
 
-Use this when you can't proceed and need to hand off to another agent.
+Use this to reopen a task that was previously started, completed, or canceled.
 
 Example:
-  prog block ts-a1b2c3 "Need API spec from product team"`,
-	Args: cobra.MinimumNArgs(2),
+  prog open ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		database, err := openDB()
 		if err != nil {
@@ -631,16 +631,14 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		id := args[0]
-		reason := strings.Join(args[1:], " ")
+		if err := database.UpdateStatus(args[0], model.StatusOpen); err != nil {
+			return err
+		}
+		fmt.Printf("Reopened %s\n", args[0])
 
-		if err := database.UpdateStatus(id, model.StatusBlocked); err != nil {
-			return err
-		}
-		if err := database.AddLog(id, "Blocked: "+reason); err != nil {
-			return err
-		}
-		fmt.Printf("Blocked %s: %s\n", id, reason)
+		// Backup after successful mutation
+		database.BackupQuiet()
+
 		return nil
 	},
 }
@@ -2210,9 +2208,9 @@ Navigation:
   esc or h         Go back to list
 
 Actions:
-  s   Start task (open/blocked -> in_progress)
+  s   Start task (open -> in_progress)
   d   Mark done (in_progress -> done)
-  b   Block task (prompts for reason)
+  o   Reopen task (any status -> open)
   L   Log progress (prompts for message)
   c   Cancel task (prompts for optional reason)
   n   Create new task (inherits project from selected item)
@@ -2333,7 +2331,7 @@ func init() {
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(cancelCmd)
-	rootCmd.AddCommand(blockCmd)
+	rootCmd.AddCommand(openCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(statusCmd)
@@ -2854,7 +2852,7 @@ Before ending ANY session, you MUST complete ALL of these steps:
 
 3. Update task status:
    - prog done <id>     # if complete (will prompt for reflection)
-   - prog block <id> "reason"  # if blocked
+   - prog open <id>     # reopen if needed
 
 4. Add handoff context for next agent:
    prog append <id> "Next steps: ..."
@@ -2920,7 +2918,7 @@ prog start <id>          # Claim a task
 prog log <id> "message"  # Log progress
 prog done <id>           # Mark complete
 prog review <id>         # Mark as reviewing (awaiting merge)
-prog block <id> "why"    # Mark blocked
+prog open <id>           # Reopen a task
 
 # Creating
 prog add "title" -p project           # New task

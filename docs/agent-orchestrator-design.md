@@ -85,8 +85,8 @@ Before ending ANY agent session, you MUST:
    - STATUS {working|verifying|blocked|review_ready}
 2. Log progress in prog:
    - prog log <id> "What you accomplished"
-3. Update blockers in prog if needed:
-   - prog block <id> "reason"
+3. Reopen tasks if needed:
+   - prog open <id>
 4. Hand off next steps:
    - prog append <id> "Next steps: ..."
 
@@ -115,7 +115,7 @@ prog context -c X --summary
 
 # Progress logging
 prog log <id> "message"
-prog block <id> "reason"
+prog open <id>             # reopen if needed
 prog append <id> "Next steps..."
 
 # Status (daemon)

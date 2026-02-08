@@ -40,7 +40,7 @@ type Status string
 const (
 	StatusOpen       Status = "open"
 	StatusInProgress Status = "in_progress"
-	StatusBlocked    Status = "blocked"
+	StatusBlocked    Status = "blocked" // Derived state only — set by dep resolution and epic derivation, not by CLI
 	StatusReviewing  Status = "reviewing"
 	StatusDone       Status = "done"
 	StatusCanceled   Status = "canceled"

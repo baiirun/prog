@@ -94,7 +94,7 @@ prog done ts-a1b2c3
 | `prog start <id>` | Set task to in_progress |
 | `prog done <id>` | Mark task complete |
 | `prog cancel <id> [reason]` | Cancel task (close without completing) |
-| `prog block <id> <reason>` | Mark blocked with reason |
+| `prog open <id>` | Reopen a task (set status back to open) |
 | `prog log <id> <message>` | Add timestamped log entry |
 | `prog append <id> <text>` | Append to task description |
 | `prog desc <id> <text>` | Replace task description |
@@ -224,8 +224,8 @@ prog done ts-d4e5f6
 # Or cancel if no longer needed
 prog cancel ts-d4e5f6 "Requirements changed"
 
-# Or mark blocked for next agent
-prog block ts-d4e5f6 "Need API spec for OAuth flow"
+# Or reopen if needed
+prog open ts-d4e5f6
 
 # If task is part of an epic, update the epic too
 prog append ep-a1b2c3 "Completed auth endpoint, next: write tests"

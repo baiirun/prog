@@ -25,7 +25,6 @@ type InputMode int
 
 const (
 	InputNone    InputMode = iota
-	InputBlock             // Entering block reason
 	InputLog               // Entering log message
 	InputCancel            // Entering cancel reason
 	InputSearch            // Entering search text
@@ -463,20 +462,6 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	item := m.filtered[m.cursor]
 
 	switch mode {
-	case InputBlock:
-		if text == "" {
-			return m, nil
-		}
-		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusBlocked); err != nil {
-				return actionMsg{err: err}
-			}
-			if err := m.db.AddLog(item.ID, "Blocked: "+text); err != nil {
-				return actionMsg{err: err}
-			}
-			return actionMsg{message: fmt.Sprintf("Blocked %s", item.ID)}
-		}
-
 	case InputLog:
 		if text == "" {
 			return m, nil
@@ -594,8 +579,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.doStart()
 	case "d":
 		return m.doDone()
-	case "b":
-		return m.startInput(InputBlock, "Block reason: ")
+	case "o":
+		return m.doOpen()
 	case "L":
 		return m.startInput(InputLog, "Log message: ")
 	case "c":
@@ -700,8 +685,8 @@ func (m Model) handleDetailPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.doStart()
 	case "d":
 		return m.doDone()
-	case "b":
-		return m.startInput(InputBlock, "Block reason: ")
+	case "o":
+		return m.doOpen()
 	case "L":
 		return m.startInput(InputLog, "Log message: ")
 	case "c":
@@ -726,8 +711,8 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.doStart()
 	case "d":
 		return m.doDone()
-	case "b":
-		return m.startInput(InputBlock, "Block reason: ")
+	case "o":
+		return m.doOpen()
 	case "L":
 		return m.startInput(InputLog, "Log message: ")
 	case "c":
@@ -780,6 +765,23 @@ func (m Model) doDone() (Model, tea.Cmd) {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}
+	}
+}
+
+func (m Model) doOpen() (Model, tea.Cmd) {
+	if len(m.filtered) == 0 {
+		return m, nil
+	}
+	item := m.filtered[m.cursor]
+	if item.Status == model.StatusOpen {
+		m.message = "Already open"
+		return m, nil
+	}
+	return m, func() tea.Msg {
+		if err := m.db.UpdateStatus(item.ID, model.StatusOpen); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{message: fmt.Sprintf("Reopened %s", item.ID)}
 	}
 }
 
@@ -1032,7 +1034,7 @@ func (m Model) renderListPaneWithHeight(width, height int) string {
 		b.WriteString(helpStyle.Render("/:search p:project 1-6:status  q:quit"))
 	} else {
 		// Full width footer
-		b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new"))
+		b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done o:open L:log c:cancel n:new"))
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render("/:search p:project t:label 1-6:status 0:all  a:add-dep  r:refresh q:quit"))
 	}
@@ -1255,7 +1257,7 @@ func (m Model) detailViewWithHeight(width, height int) string {
 	// For full-screen detail view (width == 0), just return all content
 	if width == 0 {
 		lines = append(lines, "")
-		lines = append(lines, helpStyle.Render("esc:back  s:start d:done b:block L:log c:cancel a:add-dep  q:quit"))
+		lines = append(lines, helpStyle.Render("esc:back  s:start d:done o:open L:log c:cancel a:add-dep  q:quit"))
 		return strings.Join(lines, "\n")
 	}
 

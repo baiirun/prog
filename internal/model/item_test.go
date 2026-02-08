@@ -74,9 +74,12 @@ func TestStatus_IsValid(t *testing.T) {
 		{StatusOpen, true},
 		{StatusInProgress, true},
 		{StatusBlocked, true},
+		{StatusReviewing, true},
 		{StatusDone, true},
+		{StatusCanceled, true},
 		{Status("open"), true},
 		{Status("in_progress"), true},
+		{Status("reviewing"), true},
 		{Status(""), false},
 		{Status("invalid"), false},
 		{Status("Open"), false}, // case sensitive

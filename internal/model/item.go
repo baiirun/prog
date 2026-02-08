@@ -41,12 +41,13 @@ const (
 	StatusOpen       Status = "open"
 	StatusInProgress Status = "in_progress"
 	StatusBlocked    Status = "blocked"
+	StatusReviewing  Status = "reviewing"
 	StatusDone       Status = "done"
 	StatusCanceled   Status = "canceled"
 )
 
 func (s Status) IsValid() bool {
-	return s == StatusOpen || s == StatusInProgress || s == StatusBlocked || s == StatusDone || s == StatusCanceled
+	return s == StatusOpen || s == StatusInProgress || s == StatusBlocked || s == StatusReviewing || s == StatusDone || s == StatusCanceled
 }
 
 // Item represents a task or epic in the system.

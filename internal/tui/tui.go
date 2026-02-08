@@ -39,6 +39,7 @@ const (
 const (
 	iconOpen       = "○"
 	iconInProgress = "◐"
+	iconReviewing  = "◑"
 	iconDone       = "●"
 	iconBlocked    = "⊘"
 	iconCanceled   = "✗"
@@ -105,6 +106,7 @@ var (
 	statusColors = map[model.Status]lipgloss.Color{
 		model.StatusOpen:       lipgloss.Color("252"),
 		model.StatusInProgress: lipgloss.Color("214"),
+		model.StatusReviewing:  lipgloss.Color("141"),
 		model.StatusBlocked:    lipgloss.Color("196"),
 		model.StatusDone:       lipgloss.Color("42"),
 		model.StatusCanceled:   lipgloss.Color("245"),
@@ -146,6 +148,8 @@ func statusIcon(s model.Status) string {
 		return iconOpen
 	case model.StatusInProgress:
 		return iconInProgress
+	case model.StatusReviewing:
+		return iconReviewing
 	case model.StatusDone:
 		return iconDone
 	case model.StatusBlocked:
@@ -159,11 +163,12 @@ func statusIcon(s model.Status) string {
 
 // New creates a new TUI model with the given database connection.
 func New(database *db.DB) Model {
-	// Default: show open, in_progress, blocked
+	// Default: show open, in_progress, blocked, reviewing
 	statuses := map[model.Status]bool{
 		model.StatusOpen:       true,
 		model.StatusInProgress: true,
 		model.StatusBlocked:    true,
+		model.StatusReviewing:  true,
 		model.StatusDone:       false,
 		model.StatusCanceled:   false,
 	}
@@ -615,9 +620,12 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterStatuses[model.StatusBlocked] = !m.filterStatuses[model.StatusBlocked]
 		m.applyFilters()
 	case "4":
-		m.filterStatuses[model.StatusDone] = !m.filterStatuses[model.StatusDone]
+		m.filterStatuses[model.StatusReviewing] = !m.filterStatuses[model.StatusReviewing]
 		m.applyFilters()
 	case "5":
+		m.filterStatuses[model.StatusDone] = !m.filterStatuses[model.StatusDone]
+		m.applyFilters()
+	case "6":
 		m.filterStatuses[model.StatusCanceled] = !m.filterStatuses[model.StatusCanceled]
 		m.applyFilters()
 	case "0":
@@ -1021,12 +1029,12 @@ func (m Model) renderListPaneWithHeight(width, height int) string {
 			b.WriteString(helpStyle.Render("j/k:scroll  tab:focus list  s:start d:done L:log"))
 		}
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project 1-5:status  q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project 1-6:status  q:quit"))
 	} else {
 		// Full width footer
 		b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done b:block L:log c:cancel n:new"))
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project t:label 1-5:status 0:all  a:add-dep  r:refresh q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project t:label 1-6:status 0:all  a:add-dep  r:refresh q:quit"))
 	}
 
 	return b.String()
@@ -1117,7 +1125,7 @@ func (m Model) activeFiltersString() string {
 			statuses = append(statuses, string(s)[:1]) // First char: o/i/b/d/c
 		}
 	}
-	if len(statuses) < 5 {
+	if len(statuses) < 6 {
 		parts = append(parts, "status:"+strings.Join(statuses, ""))
 	}
 

@@ -575,6 +575,95 @@ func TestListItemsFiltered_CombinedFilters(t *testing.T) {
 	_ = task3
 }
 
+func TestReadyItems_ReviewingExcluded(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create a task and move it to reviewing
+	task := createTestItemWithProject(t, db, "Reviewing Task", "test", model.StatusOpen, 2)
+	if err := db.UpdateStatus(task.ID, model.StatusInProgress); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+	if err := db.UpdateStatus(task.ID, model.StatusReviewing); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Create an open task that should be ready
+	openTask := createTestItemWithProject(t, db, "Open Task", "test", model.StatusOpen, 2)
+
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to get ready: %v", err)
+	}
+
+	// Only the open task should be ready; reviewing task should not appear
+	if len(ready) != 1 {
+		t.Errorf("expected 1 ready item, got %d", len(ready))
+	}
+	if len(ready) > 0 && ready[0].ID != openTask.ID {
+		t.Errorf("ready item = %q, want %q", ready[0].ID, openTask.ID)
+	}
+}
+
+func TestReadyItems_ReviewingDoesNotResolveDeps(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Create blocker task and move it to reviewing
+	blocker := createTestItemWithProject(t, db, "Blocker", "test", model.StatusOpen, 2)
+	if err := db.UpdateStatus(blocker.ID, model.StatusInProgress); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+	if err := db.UpdateStatus(blocker.ID, model.StatusReviewing); err != nil {
+		t.Fatalf("failed to update status: %v", err)
+	}
+
+	// Create task that depends on the reviewing blocker
+	task := createTestItemWithProject(t, db, "Blocked Task", "test", model.StatusOpen, 1)
+	if err := db.AddDep(task.ID, blocker.ID); err != nil {
+		t.Fatalf("failed to add dep: %v", err)
+	}
+
+	// Task should NOT be ready because reviewing is not a terminal status
+	ready, err := db.ReadyItems("test")
+	if err != nil {
+		t.Fatalf("failed to get ready: %v", err)
+	}
+	for _, r := range ready {
+		if r.ID == task.ID {
+			t.Error("task blocked by reviewing item should NOT be ready")
+		}
+	}
+
+	// HasUnmetDeps should also return true
+	unmet, err := db.HasUnmetDeps(task.ID)
+	if err != nil {
+		t.Fatalf("failed to check deps: %v", err)
+	}
+	if !unmet {
+		t.Error("expected unmet deps when blocker is reviewing")
+	}
+}
+
+func TestProjectStatus_WithReviewing(t *testing.T) {
+	db := setupTestDB(t)
+
+	createTestItemWithProject(t, db, "Open", "test", model.StatusOpen, 2)
+	createTestItemWithProject(t, db, "In Progress", "test", model.StatusInProgress, 2)
+	createTestItemWithProject(t, db, "Reviewing", "test", model.StatusReviewing, 2)
+	createTestItemWithProject(t, db, "Done", "test", model.StatusDone, 2)
+
+	report, err := db.ProjectStatus("test")
+	if err != nil {
+		t.Fatalf("failed to get status: %v", err)
+	}
+
+	if report.Reviewing != 1 {
+		t.Errorf("reviewing = %d, want 1", report.Reviewing)
+	}
+	if len(report.ReviewingItems) != 1 {
+		t.Errorf("reviewing items = %d, want 1", len(report.ReviewingItems))
+	}
+}
+
 func TestReadyItems_WithDefinitionOfDone(t *testing.T) {
 	db := setupTestDB(t)
 

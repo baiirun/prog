@@ -148,17 +148,19 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 
 // StatusReport contains aggregated project status.
 type StatusReport struct {
-	Project      string
-	Open         int
-	InProgress   int
-	Blocked      int
-	Done         int
-	Canceled     int
-	Ready        int
-	RecentDone   []model.Item // last 3 completed
-	InProgItems  []model.Item // current in-progress
-	BlockedItems []model.Item // blocked with reasons
-	ReadyItems   []model.Item // ready for work
+	Project        string
+	Open           int
+	InProgress     int
+	Blocked        int
+	Reviewing      int
+	Done           int
+	Canceled       int
+	Ready          int
+	RecentDone     []model.Item // last 3 completed
+	InProgItems    []model.Item // current in-progress
+	ReviewingItems []model.Item // awaiting merge
+	BlockedItems   []model.Item // blocked with reasons
+	ReadyItems     []model.Item // ready for work
 }
 
 // ProjectStatus returns an aggregated status report for a project.
@@ -226,6 +228,8 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 			report.InProgress = count
 		case model.StatusBlocked:
 			report.Blocked = count
+		case model.StatusReviewing:
+			report.Reviewing = count
 		case model.StatusDone:
 			report.Done = count
 		case model.StatusCanceled:
@@ -244,6 +248,13 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 	// Get in-progress items
 	inProgStatus := model.StatusInProgress
 	report.InProgItems, err = db.ListItemsFiltered(ListFilter{Project: project, Status: &inProgStatus, Labels: labels})
+	if err != nil {
+		return nil, err
+	}
+
+	// Get reviewing items
+	reviewingStatus := model.StatusReviewing
+	report.ReviewingItems, err = db.ListItemsFiltered(ListFilter{Project: project, Status: &reviewingStatus, Labels: labels})
 	if err != nil {
 		return nil, err
 	}

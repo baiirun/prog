@@ -255,7 +255,7 @@ Examples:
 		if flagStatus != "" {
 			s := model.Status(flagStatus)
 			if !s.IsValid() {
-				return fmt.Errorf("invalid status: %s (valid: open, in_progress, blocked, done, canceled)", flagStatus)
+				return fmt.Errorf("invalid status: %s (valid: open, in_progress, blocked, reviewing, done, canceled)", flagStatus)
 			}
 			status = &s
 		}
@@ -333,7 +333,7 @@ var readyCmd = &cobra.Command{
 	Long: `Show tasks that are ready to work on.
 
 A task is "ready" when:
-  - Status is "open" (not in_progress, blocked, or done)
+  - Status is "open" (not in_progress, blocked, reviewing, or done)
   - All dependencies are "done"
 
 Results are sorted by priority (1=high first).
@@ -521,6 +521,49 @@ var doneCmd = &cobra.Command{
 		fmt.Println(`
 Reflect: What would help the next agent? (See instructions for guidance)
   prog learn "summary" -c concept --detail "explanation"`)
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
+		return nil
+	},
+}
+
+var reviewCmd = &cobra.Command{
+	Use:   "review <id>",
+	Short: "Mark a task as reviewing (awaiting merge)",
+	Long: `Mark a task as reviewing — work is complete and awaiting merge.
+
+Use this when you've created a PR/branch and the code is ready for review,
+but shouldn't be marked "done" until it lands on main.
+
+Only tasks that are in_progress can be marked as reviewing.
+
+Example:
+  prog review ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		id := args[0]
+
+		// Verify the task is in_progress before transitioning
+		item, err := database.GetItem(id)
+		if err != nil {
+			return err
+		}
+		if item.Status != model.StatusInProgress {
+			return fmt.Errorf("can only review in_progress tasks (current status: %s)", item.Status)
+		}
+
+		if err := database.UpdateStatus(id, model.StatusReviewing); err != nil {
+			return err
+		}
+		fmt.Printf("Marked %s as reviewing\n", id)
 
 		// Backup after successful mutation
 		database.BackupQuiet()
@@ -722,9 +765,10 @@ var statusCmd = &cobra.Command{
 	Long: `Show a summary of project status for agent spin-up.
 
 Includes:
-  - Count by status (open, in_progress, blocked, done)
+  - Count by status (open, in_progress, blocked, reviewing, done)
   - Recently completed tasks
   - Currently in-progress tasks
+  - Tasks in review (awaiting merge)
   - Blocked tasks with reasons
   - Ready tasks by priority (limited to 10 by default)
 
@@ -750,6 +794,7 @@ Examples:
 		// Populate labels for all item slices in the report
 		_ = database.PopulateItemLabels(report.RecentDone)
 		_ = database.PopulateItemLabels(report.InProgItems)
+		_ = database.PopulateItemLabels(report.ReviewingItems)
 		_ = database.PopulateItemLabels(report.BlockedItems)
 		_ = database.PopulateItemLabels(report.ReadyItems)
 
@@ -2178,7 +2223,7 @@ Actions:
 Filtering:
   /       Search by title/ID/description
   p       Filter by project
-  1-5     Toggle status: 1=open 2=in_progress 3=blocked 4=done 5=canceled
+  1-6     Toggle status: 1=open 2=in_progress 3=blocked 4=reviewing 5=done 6=canceled
   0       Show all statuses
   esc     Clear filters, or quit if none set
 
@@ -2208,7 +2253,7 @@ func init() {
 	addCmd.Flags().StringVarP(&flagDesc, "desc", "d", "", "Description body")
 
 	// list flags
-	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, done, canceled)")
+	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, reviewing, done, canceled)")
 	listCmd.Flags().StringVar(&flagListParent, "parent", "", "Filter by parent epic ID")
 	listCmd.Flags().StringVar(&flagListType, "type", "", "Filter by item type (task, epic)")
 	listCmd.Flags().StringVar(&flagBlocking, "blocking", "", "Show items that block the given ID")
@@ -2286,6 +2331,7 @@ func init() {
 	rootCmd.AddCommand(showCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(doneCmd)
+	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(cancelCmd)
 	rootCmd.AddCommand(blockCmd)
 	rootCmd.AddCommand(deleteCmd)
@@ -2429,8 +2475,8 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	}
 	fmt.Printf("Project: %s\n\n", project)
 
-	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d done, %d canceled (%d ready)\n\n",
-		report.Open, report.InProgress, report.Blocked, report.Done, report.Canceled, report.Ready)
+	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d reviewing, %d done, %d canceled (%d ready)\n\n",
+		report.Open, report.InProgress, report.Blocked, report.Reviewing, report.Done, report.Canceled, report.Ready)
 
 	// Show project in output when viewing all projects
 	showProject := report.Project == ""
@@ -2446,6 +2492,14 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	if len(report.InProgItems) > 0 {
 		fmt.Println("In progress:")
 		for _, item := range report.InProgItems {
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+		}
+		fmt.Println()
+	}
+
+	if len(report.ReviewingItems) > 0 {
+		fmt.Println("Reviewing:")
+		for _, item := range report.ReviewingItems {
 			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
 		}
 		fmt.Println()
@@ -2865,6 +2919,7 @@ prog show <id>           # Full details + suggested concepts
 prog start <id>          # Claim a task
 prog log <id> "message"  # Log progress
 prog done <id>           # Mark complete
+prog review <id>         # Mark as reviewing (awaiting merge)
 prog block <id> "why"    # Mark blocked
 
 # Creating
@@ -2895,6 +2950,13 @@ prog ready -p myproject        # Ready in project`)
 		if len(report.InProgItems) > 0 {
 			fmt.Println("\nIn progress:")
 			for _, item := range report.InProgItems {
+				fmt.Printf("  [%s] %s\n", item.ID, item.Title)
+			}
+		}
+
+		if len(report.ReviewingItems) > 0 {
+			fmt.Println("\nReviewing:")
+			for _, item := range report.ReviewingItems {
 				fmt.Printf("  [%s] %s\n", item.ID, item.Title)
 			}
 		}

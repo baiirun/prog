@@ -824,7 +824,12 @@ func (m Model) View() string {
 		b.WriteString(messageStyle.Render(m.message))
 	}
 
-	// Apply padding to entire content
+	// In split view, no padding — content fills the terminal
+	if m.viewMode == ViewList && m.width >= minSplitWidth {
+		return b.String()
+	}
+
+	// Narrow/detail views get content padding
 	padStyle := lipgloss.NewStyle().
 		PaddingLeft(contentPadding).
 		PaddingRight(contentPadding).
@@ -844,53 +849,42 @@ func (m Model) listView() string {
 
 // splitView renders the split layout with list on left and details on right.
 func (m Model) splitView() string {
-	// Border colors
-	focusedColor := lipgloss.Color("39")    // Blue for focused
-	unfocusedColor := lipgloss.Color("241") // Dim gray for unfocused
-
-	// Calculate pane dimensions
-	// Each pane has: 1 border left + content + 1 border right
-	// Plus 1 char gap between panes
-	gap := 1
-	borderChars := 4 // 2 per pane (left + right borders)
-	availableWidth := m.width - borderChars - gap - (contentPadding * 2)
+	// Layout: left content │ right content
+	separatorWidth := 1
+	availableWidth := m.width - separatorWidth
 	leftContentWidth := availableWidth / 2
 	rightContentWidth := availableWidth - leftContentWidth
 
-	// Height: fill viewport
-	// Account for: outer padding top (1), border top (1), border bottom (1), padding bottom (1)
-	contentHeight := m.height - 4
+	// Fill viewport, reserving lines for potential input/status bar
+	contentHeight := m.height - 2
 	if contentHeight < 10 {
 		contentHeight = 10
 	}
 
-	// Render content for each pane, passing the exact height available
 	leftContent := m.renderListPaneWithHeight(leftContentWidth, contentHeight)
 	rightContent := m.detailViewWithHeight(rightContentWidth, contentHeight)
 
-	// Split into lines and normalize heights
 	leftLines := strings.Split(leftContent, "\n")
 	rightLines := strings.Split(rightContent, "\n")
 
-	// Ensure exact height by padding/truncating
 	leftLines = normalizeLines(leftLines, contentHeight, leftContentWidth)
 	rightLines = normalizeLines(rightLines, contentHeight, rightContentWidth)
 
-	// Determine border colors based on focus
-	leftColor := unfocusedColor
-	rightColor := unfocusedColor
-	if m.focusPane == FocusList {
-		leftColor = focusedColor
-	} else {
-		rightColor = focusedColor
+	// Single dim vertical line between panes
+	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	separator := sepStyle.Render("│")
+
+	var b strings.Builder
+	for i := 0; i < contentHeight; i++ {
+		b.WriteString(leftLines[i])
+		b.WriteString(separator)
+		b.WriteString(rightLines[i])
+		if i < contentHeight-1 {
+			b.WriteString("\n")
+		}
 	}
 
-	// Build bordered panes manually
-	leftBox := buildBorderedBox(leftLines, leftContentWidth, leftColor)
-	rightBox := buildBorderedBox(rightLines, rightContentWidth, rightColor)
-
-	// Join with gap
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftBox, strings.Repeat(" ", gap), rightBox)
+	return b.String()
 }
 
 // normalizeLines ensures the slice has exactly `height` lines, each padded to `width`.
@@ -904,42 +898,6 @@ func normalizeLines(lines []string, height, width int) []string {
 		}
 	}
 	return result
-}
-
-// buildBorderedBox creates a box with rounded borders around content lines.
-func buildBorderedBox(lines []string, contentWidth int, borderColor lipgloss.Color) string {
-	style := lipgloss.NewStyle().Foreground(borderColor)
-
-	// Box drawing chars (rounded)
-	topLeft := style.Render("╭")
-	topRight := style.Render("╮")
-	bottomLeft := style.Render("╰")
-	bottomRight := style.Render("╯")
-	horizontal := style.Render("─")
-	vertical := style.Render("│")
-
-	var b strings.Builder
-
-	// Top border
-	b.WriteString(topLeft)
-	b.WriteString(strings.Repeat(horizontal, contentWidth))
-	b.WriteString(topRight)
-	b.WriteString("\n")
-
-	// Content lines with side borders
-	for _, line := range lines {
-		b.WriteString(vertical)
-		b.WriteString(line)
-		b.WriteString(vertical)
-		b.WriteString("\n")
-	}
-
-	// Bottom border
-	b.WriteString(bottomLeft)
-	b.WriteString(strings.Repeat(horizontal, contentWidth))
-	b.WriteString(bottomRight)
-
-	return b.String()
 }
 
 // padToWidth pads a string to the specified width with spaces.
@@ -1172,6 +1130,27 @@ func (m Model) detailViewWithHeight(width, height int) string {
 		return s[:maxLen-3] + "..."
 	}
 
+	// Helper to word-wrap text to maxLen columns
+	wordWrap := func(s string, maxLen int) []string {
+		if maxLen <= 0 || len(s) <= maxLen {
+			return []string{s}
+		}
+		var result []string
+		for len(s) > maxLen {
+			// Find last space within maxLen
+			cut := maxLen
+			if idx := strings.LastIndex(s[:maxLen], " "); idx > 0 {
+				cut = idx
+			}
+			result = append(result, s[:cut])
+			s = strings.TrimLeft(s[cut:], " ")
+		}
+		if len(s) > 0 {
+			result = append(result, s)
+		}
+		return result
+	}
+
 	// Calculate effective width for content
 	effectiveWidth := width
 	if effectiveWidth == 0 {
@@ -1229,14 +1208,15 @@ func (m Model) detailViewWithHeight(width, height int) string {
 	if item.Description != "" {
 		lines = append(lines, "")
 		lines = append(lines, detailLabelStyle.Render("Description:"))
-		// Split description into lines
+		// Split description into lines and word-wrap long ones
 		desc := item.Description
 		descLines := strings.Split(desc, "\n")
 		for _, dl := range descLines {
 			if width > 0 && len(dl) > effectiveWidth {
-				dl = truncate(dl, effectiveWidth)
+				lines = append(lines, wordWrap(dl, effectiveWidth)...)
+			} else {
+				lines = append(lines, dl)
 			}
-			lines = append(lines, dl)
 		}
 	}
 
@@ -1247,10 +1227,20 @@ func (m Model) detailViewWithHeight(width, height int) string {
 		for _, log := range m.detailLogs {
 			ts := dimStyle.Render(log.CreatedAt.Format("2006-01-02 15:04"))
 			msg := log.Message
+			indent := "  " + strings.Repeat(" ", 17) // Align with text after timestamp
 			if width > 0 {
-				msg = truncate(msg, effectiveWidth-20) // Leave room for timestamp
+				msgWidth := effectiveWidth - 20 // Leave room for timestamp
+				wrapped := wordWrap(msg, msgWidth)
+				for i, wl := range wrapped {
+					if i == 0 {
+						lines = append(lines, "  "+ts+" "+wl)
+					} else {
+						lines = append(lines, indent+wl)
+					}
+				}
+			} else {
+				lines = append(lines, "  "+ts+" "+msg)
 			}
-			lines = append(lines, "  "+ts+" "+msg)
 		}
 	}
 

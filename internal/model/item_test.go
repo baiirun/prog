@@ -71,12 +71,14 @@ func TestStatus_IsValid(t *testing.T) {
 		status Status
 		valid  bool
 	}{
+		{StatusDraft, true},
 		{StatusOpen, true},
 		{StatusInProgress, true},
 		{StatusBlocked, true},
 		{StatusReviewing, true},
 		{StatusDone, true},
 		{StatusCanceled, true},
+		{Status("draft"), true},
 		{Status("open"), true},
 		{Status("in_progress"), true},
 		{Status("reviewing"), true},

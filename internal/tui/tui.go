@@ -36,6 +36,7 @@ const (
 
 // Status icons
 const (
+	iconDraft      = "◇"
 	iconOpen       = "○"
 	iconInProgress = "◐"
 	iconReviewing  = "◑"
@@ -103,6 +104,7 @@ var (
 				Background(lipgloss.Color("57"))
 
 	statusColors = map[model.Status]lipgloss.Color{
+		model.StatusDraft:      lipgloss.Color("246"),
 		model.StatusOpen:       lipgloss.Color("252"),
 		model.StatusInProgress: lipgloss.Color("214"),
 		model.StatusReviewing:  lipgloss.Color("141"),
@@ -143,6 +145,8 @@ var (
 
 func statusIcon(s model.Status) string {
 	switch s {
+	case model.StatusDraft:
+		return iconDraft
 	case model.StatusOpen:
 		return iconOpen
 	case model.StatusInProgress:
@@ -162,8 +166,9 @@ func statusIcon(s model.Status) string {
 
 // New creates a new TUI model with the given database connection.
 func New(database *db.DB) Model {
-	// Default: show open, in_progress, blocked, reviewing
+	// Default: show draft, open, in_progress, blocked, reviewing
 	statuses := map[model.Status]bool{
+		model.StatusDraft:      true,
 		model.StatusOpen:       true,
 		model.StatusInProgress: true,
 		model.StatusBlocked:    true,
@@ -596,21 +601,24 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		return m.startInput(InputLabel, "Label: ")
 	case "1":
-		m.filterStatuses[model.StatusOpen] = !m.filterStatuses[model.StatusOpen]
+		m.filterStatuses[model.StatusDraft] = !m.filterStatuses[model.StatusDraft]
 		m.applyFilters()
 	case "2":
-		m.filterStatuses[model.StatusInProgress] = !m.filterStatuses[model.StatusInProgress]
+		m.filterStatuses[model.StatusOpen] = !m.filterStatuses[model.StatusOpen]
 		m.applyFilters()
 	case "3":
-		m.filterStatuses[model.StatusBlocked] = !m.filterStatuses[model.StatusBlocked]
+		m.filterStatuses[model.StatusInProgress] = !m.filterStatuses[model.StatusInProgress]
 		m.applyFilters()
 	case "4":
-		m.filterStatuses[model.StatusReviewing] = !m.filterStatuses[model.StatusReviewing]
+		m.filterStatuses[model.StatusBlocked] = !m.filterStatuses[model.StatusBlocked]
 		m.applyFilters()
 	case "5":
-		m.filterStatuses[model.StatusDone] = !m.filterStatuses[model.StatusDone]
+		m.filterStatuses[model.StatusReviewing] = !m.filterStatuses[model.StatusReviewing]
 		m.applyFilters()
 	case "6":
+		m.filterStatuses[model.StatusDone] = !m.filterStatuses[model.StatusDone]
+		m.applyFilters()
+	case "7":
 		m.filterStatuses[model.StatusCanceled] = !m.filterStatuses[model.StatusCanceled]
 		m.applyFilters()
 	case "0":
@@ -739,8 +747,8 @@ func (m Model) doStart() (Model, tea.Cmd) {
 		return m, nil
 	}
 	item := m.filtered[m.cursor]
-	if item.Status != model.StatusOpen && item.Status != model.StatusBlocked {
-		m.message = "Can only start open or blocked tasks"
+	if item.Status != model.StatusDraft && item.Status != model.StatusOpen && item.Status != model.StatusBlocked {
+		m.message = "Can only start draft, open, or blocked tasks"
 		return m, nil
 	}
 	return m, func() tea.Msg {
@@ -989,12 +997,12 @@ func (m Model) renderListPaneWithHeight(width, height int) string {
 			b.WriteString(helpStyle.Render("j/k:scroll  tab:focus list  s:start d:done L:log"))
 		}
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project 1-6:status  q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project 1-7:status  q:quit"))
 	} else {
 		// Full width footer
 		b.WriteString(helpStyle.Render("j/k:nav  enter:detail  s:start d:done o:open L:log c:cancel n:new"))
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("/:search p:project t:label 1-6:status 0:all  a:add-dep  r:refresh q:quit"))
+		b.WriteString(helpStyle.Render("/:search p:project t:label 1-7:status 0:all  a:add-dep  r:refresh q:quit"))
 	}
 
 	return b.String()
@@ -1078,14 +1086,23 @@ func (m Model) formatItemLineStyled(item model.Item, width int) string {
 func (m Model) activeFiltersString() string {
 	var parts []string
 
-	// Status filter
+	// Status filter — use two-char abbreviations to avoid collisions (draft/done both start with 'd')
+	abbrev := map[model.Status]string{
+		model.StatusDraft:      "dr",
+		model.StatusOpen:       "op",
+		model.StatusInProgress: "ip",
+		model.StatusBlocked:    "bl",
+		model.StatusReviewing:  "rv",
+		model.StatusDone:       "dn",
+		model.StatusCanceled:   "ca",
+	}
 	var statuses []string
 	for s, active := range m.filterStatuses {
 		if active {
-			statuses = append(statuses, string(s)[:1]) // First char: o/i/b/d/c
+			statuses = append(statuses, abbrev[s])
 		}
 	}
-	if len(statuses) < 6 {
+	if len(statuses) < len(m.filterStatuses) {
 		parts = append(parts, "status:"+strings.Join(statuses, ""))
 	}
 

@@ -38,6 +38,7 @@ func (t ItemType) IsValid() bool {
 type Status string
 
 const (
+	StatusDraft      Status = "draft" // Task is being defined/scoped, not yet ready for work
 	StatusOpen       Status = "open"
 	StatusInProgress Status = "in_progress"
 	StatusBlocked    Status = "blocked" // Derived state only — set by dep resolution and epic derivation, not by CLI
@@ -47,7 +48,7 @@ const (
 )
 
 func (s Status) IsValid() bool {
-	return s == StatusOpen || s == StatusInProgress || s == StatusBlocked || s == StatusReviewing || s == StatusDone || s == StatusCanceled
+	return s == StatusDraft || s == StatusOpen || s == StatusInProgress || s == StatusBlocked || s == StatusReviewing || s == StatusDone || s == StatusCanceled
 }
 
 // Item represents a task or epic in the system.

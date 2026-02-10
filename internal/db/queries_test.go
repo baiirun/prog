@@ -883,6 +883,46 @@ func TestDeriveEpicStatus_BlockedWithDoneChildren(t *testing.T) {
 	}
 }
 
+func TestDeriveEpicStatus_AllDraft(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	task := createTestItemWithProject(t, db, "Task", "test", model.StatusDraft, 2)
+	if err := db.SetParent(task.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusDraft {
+		t.Errorf("all-draft epic status = %q, want draft", status)
+	}
+}
+
+func TestDeriveEpicStatus_DraftAndOpen(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createTestEpic(t, db, "Epic", "test")
+
+	draft := createTestItemWithProject(t, db, "Draft Task", "test", model.StatusDraft, 2)
+	if err := db.SetParent(draft.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+	open := createTestItemWithProject(t, db, "Open Task", "test", model.StatusOpen, 2)
+	if err := db.SetParent(open.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.DeriveEpicStatus(epic.ID)
+	if err != nil {
+		t.Fatalf("DeriveEpicStatus: %v", err)
+	}
+	if status != model.StatusOpen {
+		t.Errorf("draft+open epic status = %q, want open", status)
+	}
+}
+
 func TestDeriveEpicStatus_AllOpen(t *testing.T) {
 	db := setupTestDB(t)
 	epic := createTestEpic(t, db, "Epic", "test")
@@ -1159,7 +1199,10 @@ func TestDeriveAndDeps_Consistency(t *testing.T) {
 		{"all done", []model.Status{model.StatusDone, model.StatusDone}, true},
 		{"all canceled", []model.Status{model.StatusCanceled}, true},
 		{"done+canceled", []model.Status{model.StatusDone, model.StatusCanceled}, true},
+		{"all draft", []model.Status{model.StatusDraft}, false},
 		{"all open", []model.Status{model.StatusOpen}, false},
+		{"draft+open", []model.Status{model.StatusDraft, model.StatusOpen}, false},
+		{"draft+done", []model.Status{model.StatusDraft, model.StatusDone}, false},
 		{"one open one done", []model.Status{model.StatusOpen, model.StatusDone}, false},
 		{"in_progress", []model.Status{model.StatusInProgress}, false},
 		{"blocked", []model.Status{model.StatusBlocked}, false},

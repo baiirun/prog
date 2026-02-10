@@ -287,7 +287,7 @@ func (db *DB) deriveFromChildren(epicID string, storedStatus model.Status) (mode
 	}
 	defer func() { _ = rows.Close() }()
 
-	var total, open, done, canceled, blocked, inProgress, reviewing int
+	var total, draft, open, done, canceled, blocked, inProgress, reviewing int
 	for rows.Next() {
 		var status string
 		var count int
@@ -296,6 +296,8 @@ func (db *DB) deriveFromChildren(epicID string, storedStatus model.Status) (mode
 		}
 		total += count
 		switch model.Status(status) {
+		case model.StatusDraft:
+			draft += count
 		case model.StatusOpen:
 			open += count
 		case model.StatusDone:
@@ -317,7 +319,7 @@ func (db *DB) deriveFromChildren(epicID string, storedStatus model.Status) (mode
 	}
 
 	// Assert: buckets must sum to total (partition invariant)
-	if sum := open + done + canceled + blocked + inProgress + reviewing; sum != total {
+	if sum := draft + open + done + canceled + blocked + inProgress + reviewing; sum != total {
 		return "", fmt.Errorf("deriveFromChildren: partition mismatch for epic %s: sum=%d total=%d", epicID, sum, total)
 	}
 
@@ -342,6 +344,12 @@ func (db *DB) deriveFromChildren(epicID string, storedStatus model.Status) (mode
 		return model.StatusInProgress, nil
 	}
 
+	// All unresolved children are still in draft (nothing is ready for work yet)
+	if draft == unresolved {
+		return model.StatusDraft, nil
+	}
+
+	// Remaining: mix of draft and open children, or all open
 	return model.StatusOpen, nil
 }
 

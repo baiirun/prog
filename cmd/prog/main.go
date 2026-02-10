@@ -41,6 +41,7 @@ var (
 	flagProject          string
 	flagStatus           string
 	flagEpic             bool
+	flagDraft            bool
 	flagPriority         int
 	flagForce            bool
 	flagParent           string
@@ -169,12 +170,17 @@ Examples:
 			itemType = model.ItemTypeEpic
 		}
 
+		status := model.StatusOpen
+		if flagDraft {
+			status = model.StatusDraft
+		}
+
 		item := &model.Item{
 			ID:        model.GenerateID(itemType),
 			Project:   flagProject,
 			Type:      itemType,
 			Title:     strings.Join(args, " "),
-			Status:    model.StatusOpen,
+			Status:    status,
 			Priority:  flagPriority,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -255,7 +261,7 @@ Examples:
 		if flagStatus != "" {
 			s := model.Status(flagStatus)
 			if !s.IsValid() {
-				return fmt.Errorf("invalid status: %s (valid: open, in_progress, blocked, reviewing, done, canceled)", flagStatus)
+				return fmt.Errorf("invalid status: %s (valid: draft, open, in_progress, blocked, reviewing, done, canceled)", flagStatus)
 			}
 			status = &s
 		}
@@ -333,7 +339,7 @@ var readyCmd = &cobra.Command{
 	Long: `Show tasks that are ready to work on.
 
 A task is "ready" when:
-  - Status is "open" (not in_progress, blocked, reviewing, or done)
+  - Status is "open" (not draft, in_progress, blocked, reviewing, done, or canceled)
   - All dependencies are "done"
 
 Results are sorted by priority (1=high first).
@@ -614,6 +620,36 @@ Example:
 	},
 }
 
+var draftCmd = &cobra.Command{
+	Use:   "draft <id>",
+	Short: "Set a task back to draft (not yet ready for work)",
+	Long: `Set a task's status to draft.
+
+Use this to move a task back to the planning/scoping phase.
+Draft tasks don't appear in 'prog ready' output.
+
+Example:
+  prog draft ts-a1b2c3`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		database, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = database.Close() }()
+
+		if err := database.UpdateStatus(args[0], model.StatusDraft); err != nil {
+			return err
+		}
+		fmt.Printf("Moved %s to draft\n", args[0])
+
+		// Backup after successful mutation
+		database.BackupQuiet()
+
+		return nil
+	},
+}
+
 var openCmd = &cobra.Command{
 	Use:   "open <id>",
 	Short: "Reopen a task (set status back to open)",
@@ -763,7 +799,7 @@ var statusCmd = &cobra.Command{
 	Long: `Show a summary of project status for agent spin-up.
 
 Includes:
-  - Count by status (open, in_progress, blocked, reviewing, done)
+  - Count by status (draft, open, in_progress, blocked, reviewing, done, canceled)
   - Recently completed tasks
   - Currently in-progress tasks
   - Tasks in review (awaiting merge)
@@ -790,6 +826,7 @@ Examples:
 		}
 
 		// Populate labels for all item slices in the report
+		_ = database.PopulateItemLabels(report.DraftItems)
 		_ = database.PopulateItemLabels(report.RecentDone)
 		_ = database.PopulateItemLabels(report.InProgItems)
 		_ = database.PopulateItemLabels(report.ReviewingItems)
@@ -2221,7 +2258,7 @@ Actions:
 Filtering:
   /       Search by title/ID/description
   p       Filter by project
-  1-6     Toggle status: 1=open 2=in_progress 3=blocked 4=reviewing 5=done 6=canceled
+  1-7     Toggle status: 1=draft 2=open 3=in_progress 4=blocked 5=reviewing 6=done 7=canceled
   0       Show all statuses
   esc     Clear filters, or quit if none set
 
@@ -2243,6 +2280,7 @@ func init() {
 
 	// add flags
 	addCmd.Flags().BoolVarP(&flagEpic, "epic", "e", false, "Create an epic instead of a task")
+	addCmd.Flags().BoolVar(&flagDraft, "draft", false, "Create in draft status (not yet ready for work)")
 	addCmd.Flags().IntVar(&flagPriority, "priority", 2, "Priority (1=high, 2=medium, 3=low)")
 	addCmd.Flags().StringVar(&flagParent, "parent", "", "Parent epic ID")
 	addCmd.Flags().StringVar(&flagBlocks, "blocks", "", "ID of task this will block")
@@ -2251,7 +2289,7 @@ func init() {
 	addCmd.Flags().StringVarP(&flagDesc, "desc", "d", "", "Description body")
 
 	// list flags
-	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (open, in_progress, blocked, reviewing, done, canceled)")
+	listCmd.Flags().StringVar(&flagStatus, "status", "", "Filter by status (draft, open, in_progress, blocked, reviewing, done, canceled)")
 	listCmd.Flags().StringVar(&flagListParent, "parent", "", "Filter by parent epic ID")
 	listCmd.Flags().StringVar(&flagListType, "type", "", "Filter by item type (task, epic)")
 	listCmd.Flags().StringVar(&flagBlocking, "blocking", "", "Show items that block the given ID")
@@ -2331,6 +2369,7 @@ func init() {
 	rootCmd.AddCommand(doneCmd)
 	rootCmd.AddCommand(reviewCmd)
 	rootCmd.AddCommand(cancelCmd)
+	rootCmd.AddCommand(draftCmd)
 	rootCmd.AddCommand(openCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(logCmd)
@@ -2473,11 +2512,19 @@ func printStatusReport(report *db.StatusReport, showAll bool) {
 	}
 	fmt.Printf("Project: %s\n\n", project)
 
-	fmt.Printf("Summary: %d open, %d in progress, %d blocked, %d reviewing, %d done, %d canceled (%d ready)\n\n",
-		report.Open, report.InProgress, report.Blocked, report.Reviewing, report.Done, report.Canceled, report.Ready)
+	fmt.Printf("Summary: %d draft, %d open, %d in progress, %d blocked, %d reviewing, %d done, %d canceled (%d ready)\n\n",
+		report.Draft, report.Open, report.InProgress, report.Blocked, report.Reviewing, report.Done, report.Canceled, report.Ready)
 
 	// Show project in output when viewing all projects
 	showProject := report.Project == ""
+
+	if len(report.DraftItems) > 0 {
+		fmt.Println("Draft:")
+		for _, item := range report.DraftItems {
+			fmt.Printf("  %s\n", formatStatusItem(item, showProject, false))
+		}
+		fmt.Println()
+	}
 
 	if len(report.RecentDone) > 0 {
 		fmt.Println("Recently completed:")

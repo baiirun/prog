@@ -184,6 +184,7 @@ func (db *DB) ReadyItemsFiltered(project string, labels []string) ([]model.Item,
 // StatusReport contains aggregated project status.
 type StatusReport struct {
 	Project        string
+	Draft          int
 	Open           int
 	InProgress     int
 	Blocked        int
@@ -191,6 +192,7 @@ type StatusReport struct {
 	Done           int
 	Canceled       int
 	Ready          int
+	DraftItems     []model.Item // being defined/scoped
 	RecentDone     []model.Item // last 3 completed
 	InProgItems    []model.Item // current in-progress
 	ReviewingItems []model.Item // awaiting merge
@@ -217,6 +219,9 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 	// Count by derived status and categorize items
 	for _, item := range allItems {
 		switch item.Status {
+		case model.StatusDraft:
+			report.Draft++
+			report.DraftItems = append(report.DraftItems, item)
 		case model.StatusOpen:
 			report.Open++
 		case model.StatusInProgress:
@@ -232,6 +237,8 @@ func (db *DB) ProjectStatusFiltered(project string, labels []string) (*StatusRep
 			report.Done++
 		case model.StatusCanceled:
 			report.Canceled++
+		default:
+			return nil, fmt.Errorf("ProjectStatusFiltered: unknown status %q for item %s", item.Status, item.ID)
 		}
 	}
 

@@ -722,12 +722,17 @@ func TestDeriveEpicStatus_NoChildren(t *testing.T) {
 	db := setupTestDB(t)
 	epic := createTestEpic(t, db, "Empty Epic", "test")
 
+	// Verify the epic is stored as open (creation default) but derives to draft
+	if epic.Status != model.StatusOpen {
+		t.Fatalf("precondition: epic stored status = %q, want open", epic.Status)
+	}
+
 	status, err := db.DeriveEpicStatus(epic.ID)
 	if err != nil {
 		t.Fatalf("DeriveEpicStatus: %v", err)
 	}
-	if status != model.StatusOpen {
-		t.Errorf("empty epic status = %q, want open", status)
+	if status != model.StatusDraft {
+		t.Errorf("empty epic status = %q, want draft (overrides stored open)", status)
 	}
 }
 
@@ -1196,6 +1201,7 @@ func TestDeriveAndDeps_Consistency(t *testing.T) {
 		childStatuses []model.Status
 		wantResolved  bool // true = epic derived done/canceled
 	}{
+		{"no children", []model.Status{}, false},
 		{"all done", []model.Status{model.StatusDone, model.StatusDone}, true},
 		{"all canceled", []model.Status{model.StatusCanceled}, true},
 		{"done+canceled", []model.Status{model.StatusDone, model.StatusCanceled}, true},

@@ -236,7 +236,7 @@ func (db *DB) SetDefinitionOfDone(id string, dod *string) error {
 //
 // Rules:
 //   - Manual override: if stored status is done or canceled, return it (force-close).
-//   - No children: return stored status.
+//   - No children: draft (no work defined yet).
 //   - All children done/canceled: done.
 //   - All non-done children blocked: blocked.
 //   - At least one child in_progress, reviewing, or done (but not all resolved): in_progress.
@@ -323,9 +323,9 @@ func (db *DB) deriveFromChildren(epicID string, storedStatus model.Status) (mode
 		return "", fmt.Errorf("deriveFromChildren: partition mismatch for epic %s: sum=%d total=%d", epicID, sum, total)
 	}
 
-	// No children: use stored status
+	// No children: epic has no work defined yet
 	if total == 0 {
-		return storedStatus, nil
+		return model.StatusDraft, nil
 	}
 
 	// All resolved (done or canceled)

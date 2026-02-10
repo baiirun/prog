@@ -165,7 +165,7 @@ func statusIcon(s model.Status) string {
 }
 
 // New creates a new TUI model with the given database connection.
-func New(database *db.DB) Model {
+func New(database *db.DB, project string) Model {
 	// Default: show draft, open, in_progress, blocked, reviewing
 	statuses := map[model.Status]bool{
 		model.StatusDraft:      true,
@@ -180,6 +180,7 @@ func New(database *db.DB) Model {
 		db:             database,
 		viewMode:       ViewList,
 		filterStatuses: statuses,
+		filterProject:  project,
 	}
 }
 
@@ -1293,8 +1294,8 @@ func (m Model) detailViewWithHeight(width, height int) string {
 }
 
 // Run starts the TUI.
-func Run(database *db.DB) error {
-	m := New(database)
+func Run(database *db.DB, project string) error {
+	m := New(database, project)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

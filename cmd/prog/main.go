@@ -2270,7 +2270,7 @@ Press q to quit.`,
 		}
 		defer func() { _ = database.Close() }()
 
-		return tui.Run(database)
+		return tui.Run(database, flagProject)
 	},
 }
 

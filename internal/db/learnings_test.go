@@ -762,8 +762,7 @@ func TestGetCurrentTaskID(t *testing.T) {
 	}
 	if taskID == nil {
 		t.Fatal("expected task ID, got nil")
-	}
-	if *taskID != task.ID {
+	} else if *taskID != task.ID {
 		t.Errorf("taskID = %q, want %q", *taskID, task.ID)
 	}
 }

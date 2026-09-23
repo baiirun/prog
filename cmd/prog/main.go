@@ -318,6 +318,8 @@ Examples:
 					DefinitionOfDone: item.DefinitionOfDone,
 					Labels:           labels,
 					Dependencies:     deps,
+					CreatedAt:        Timestamp(item.CreatedAt),
+					UpdatedAt:        Timestamp(item.UpdatedAt),
 				})
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -458,7 +460,7 @@ Examples:
 			for _, l := range logs {
 				logEntries = append(logEntries, LogJSON{
 					Message:   l.Message,
-					CreatedAt: l.CreatedAt.Format(time.RFC3339),
+					CreatedAt: Timestamp(l.CreatedAt),
 				})
 			}
 			output := ItemShowJSON{
@@ -473,6 +475,8 @@ Examples:
 				DefinitionOfDone: item.DefinitionOfDone,
 				Labels:           labels,
 				Dependencies:     deps,
+				CreatedAt:        Timestamp(item.CreatedAt),
+				UpdatedAt:        Timestamp(item.UpdatedAt),
 				Logs:             logEntries,
 			}
 			b, err := json.MarshalIndent(output, "", "  ")
@@ -2695,39 +2699,66 @@ type ItemShowJSON struct {
 	DefinitionOfDone *string   `json:"definition_of_done"`
 	Labels           []string  `json:"labels"`
 	Dependencies     []string  `json:"dependencies"`
+	CreatedAt        Timestamp `json:"created_at"`
+	UpdatedAt        Timestamp `json:"updated_at"`
 	Logs             []LogJSON `json:"logs"`
 }
 
 // ItemListJSON is the JSON serialization format for list (show schema minus logs).
 type ItemListJSON struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Priority         int      `json:"priority"`
-	Project          string   `json:"project"`
-	Parent           *string  `json:"parent"`
-	Description      string   `json:"description"`
-	DefinitionOfDone *string  `json:"definition_of_done"`
-	Labels           []string `json:"labels"`
-	Dependencies     []string `json:"dependencies"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Type             string    `json:"type"`
+	Status           string    `json:"status"`
+	Priority         int       `json:"priority"`
+	Project          string    `json:"project"`
+	Parent           *string   `json:"parent"`
+	Description      string    `json:"description"`
+	DefinitionOfDone *string   `json:"definition_of_done"`
+	Labels           []string  `json:"labels"`
+	Dependencies     []string  `json:"dependencies"`
+	CreatedAt        Timestamp `json:"created_at"`
+	UpdatedAt        Timestamp `json:"updated_at"`
+}
+
+// Timestamp is the type for every time field in JSON output. It marshals as
+// UTC RFC3339 with whole seconds ("2026-01-09T21:12:45Z") because that is the
+// only form jq's fromdateiso8601 accepts: it rejects numeric offsets and
+// fractional seconds, and a plain time.Time field would emit both.
+type Timestamp time.Time
+
+func (t Timestamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Time(t).UTC().Format(time.RFC3339))
+}
+
+func (t *Timestamp) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return err
+	}
+	*t = Timestamp(parsed)
+	return nil
 }
 
 // LogJSON is the JSON serialization format for log entries.
 type LogJSON struct {
-	Message   string `json:"message"`
-	CreatedAt string `json:"created_at"`
+	Message   string    `json:"message"`
+	CreatedAt Timestamp `json:"created_at"`
 }
 
 // LearningJSON is the JSON serialization format for learnings.
 type LearningJSON struct {
-	ID        string   `json:"id"`
-	Summary   string   `json:"summary"`
-	Detail    string   `json:"detail,omitempty"`
-	Concepts  []string `json:"concepts"`
-	Files     []string `json:"files,omitempty"`
-	CreatedAt string   `json:"created_at"`
-	Status    string   `json:"status"`
+	ID        string    `json:"id"`
+	Summary   string    `json:"summary"`
+	Detail    string    `json:"detail,omitempty"`
+	Concepts  []string  `json:"concepts"`
+	Files     []string  `json:"files,omitempty"`
+	CreatedAt Timestamp `json:"created_at"`
+	Status    string    `json:"status"`
 }
 
 func printLearningsJSON(learnings []model.Learning) error {
@@ -2739,7 +2770,7 @@ func printLearningsJSON(learnings []model.Learning) error {
 			Detail:    l.Detail,
 			Concepts:  l.Concepts,
 			Files:     l.Files,
-			CreatedAt: l.CreatedAt.Format(time.RFC3339),
+			CreatedAt: Timestamp(l.CreatedAt),
 			Status:    string(l.Status),
 		}
 		if lj.Concepts == nil {

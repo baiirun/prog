@@ -65,7 +65,7 @@ func (db *DB) ListLabels(project string) ([]model.Label, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list labels: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var labels []model.Label
 	for rows.Next() {
@@ -208,7 +208,7 @@ func (db *DB) GetItemLabels(itemID string) ([]model.Label, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item labels: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var labels []model.Label
 	for rows.Next() {
@@ -257,7 +257,7 @@ func (db *DB) PopulateItemLabels(items []model.Item) error {
 	if err != nil {
 		return fmt.Errorf("failed to query item labels: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Build a map of item ID -> label names
 	labelMap := make(map[string][]string)

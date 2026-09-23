@@ -1,6 +1,6 @@
 # Binary
-/tasks
-/cmd/tasks/tasks
+/prog
+/cmd/prog/prog
 
 # Test
 *.test

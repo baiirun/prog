@@ -18,6 +18,8 @@ func (db *DB) CreateItem(item *model.Item) error {
 		return fmt.Errorf("invalid status: %s", item.Status)
 	}
 
+	item.Project = model.NormalizeProject(item.Project)
+
 	// Auto-create project if specified
 	if item.Project != "" {
 		if err := db.EnsureProject(item.Project); err != nil {
@@ -152,6 +154,8 @@ func (db *DB) SetParent(itemID, parentID string) error {
 
 // SetProject changes an item's project.
 func (db *DB) SetProject(id string, project string) error {
+	project = model.NormalizeProject(project)
+
 	// Auto-create project if specified
 	if project != "" {
 		if err := db.EnsureProject(project); err != nil {

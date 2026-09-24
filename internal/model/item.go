@@ -4,8 +4,19 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 )
+
+// NormalizeProject returns the canonical form of a project name.
+//
+// Project names are matched with exact string equality everywhere (filters,
+// labels, learnings), so surrounding whitespace from a sloppy -p value would
+// otherwise create a distinct, visually identical project that "-p name"
+// never matches.
+func NormalizeProject(name string) string {
+	return strings.TrimSpace(name)
+}
 
 // GenerateID returns a new ID with a type-specific prefix and 6 hex chars.
 //

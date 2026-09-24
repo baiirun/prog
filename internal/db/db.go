@@ -15,7 +15,7 @@ import (
 
 // SchemaVersion is the current schema version.
 // Increment this when adding new migrations.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // baseSchema is the original schema (version 1).
 // New tables should be added via migrations, not here.
@@ -143,6 +143,27 @@ CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label_id);
 	// Version 3: Add definition_of_done to items
 	`
 ALTER TABLE items ADD COLUMN definition_of_done TEXT;
+`,
+	// Version 4: Trim whitespace from project names. Earlier versions stored -p
+	// verbatim, so " foo" became a separate project that "-p foo" never matched.
+	// Trims the same characters as model.NormalizeProject. Labels and concepts
+	// use OR IGNORE: a row whose trimmed (name, project) already exists is left
+	// as-is rather than failing the migration.
+	`
+UPDATE items SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+UPDATE learnings SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+UPDATE OR IGNORE labels SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+UPDATE OR IGNORE concepts SET project = TRIM(project, ' ' || char(9, 10, 11, 12, 13))
+	WHERE project != TRIM(project, ' ' || char(9, 10, 11, 12, 13));
+INSERT OR IGNORE INTO projects (name, description, created_at, updated_at)
+	SELECT TRIM(name, ' ' || char(9, 10, 11, 12, 13)), description, created_at, updated_at
+	FROM projects
+	WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13))
+	  AND TRIM(name, ' ' || char(9, 10, 11, 12, 13)) != '';
+DELETE FROM projects WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13));
 `,
 }
 

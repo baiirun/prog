@@ -112,6 +112,10 @@ Quick start:
   prog ready -p myproject
   prog start <id>
   prog done <id>`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Every filter compares project names exactly, so normalize -p once here.
+		flagProject = model.NormalizeProject(flagProject)
+	},
 }
 
 var initCmd = &cobra.Command{
@@ -1078,10 +1082,11 @@ Example:
 		}
 		defer func() { _ = database.Close() }()
 
-		if err := database.SetProject(args[0], args[1]); err != nil {
+		project := model.NormalizeProject(args[1])
+		if err := database.SetProject(args[0], project); err != nil {
 			return err
 		}
-		fmt.Printf("%s is now in project %s\n", args[0], args[1])
+		fmt.Printf("%s is now in project %s\n", args[0], project)
 		return nil
 	},
 }

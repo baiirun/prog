@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS projects (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- concepts, learnings, learning_concepts and learnings_fts are retired: no
+-- code reads or writes them. They stay in the base schema so the v4 migration
+-- still applies to fresh databases, and existing rows are left in place.
 CREATE TABLE IF NOT EXISTS concepts (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,

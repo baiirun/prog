@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,45 +37,28 @@ type Hook struct {
 }
 
 var (
-	flagProject          string
-	flagStatus           string
-	flagEpic             bool
-	flagDraft            bool
-	flagPriority         int
-	flagForce            bool
-	flagParent           string
-	flagBlocks           string
-	flagListParent       string
-	flagListType         string
-	flagBlocking         string
-	flagBlockedBy        string
-	flagHasBlockers      bool
-	flagNoBlockers       bool
-	flagEditTitle        string
-	flagStatusAll        bool
-	flagLearnConcept     []string
-	flagLearnFile        []string
-	flagLearnEditSummary string
-	flagLearnEditDetail  string
-	flagLearnStaleReason string
-	flagConceptsRecent   bool
-	flagConceptsRelated  string
-	flagConceptsSummary  string
-	flagConceptsRename   string
-	flagConceptsStats    bool
-	flagContextConcept   []string
-	flagContextQuery     string
-	flagContextStale     bool
-	flagContextSummary   bool
-	flagContextID        string
-	flagContextJSON      bool
-	flagLearnDetail      string
-	flagLabelsColor      string
-	flagAddLabels        []string
-	flagFilterLabels     []string
-	flagDoD              string
-	flagDesc             string
-	flagJSON             bool
+	flagProject      string
+	flagStatus       string
+	flagEpic         bool
+	flagDraft        bool
+	flagPriority     int
+	flagForce        bool
+	flagParent       string
+	flagBlocks       string
+	flagListParent   string
+	flagListType     string
+	flagBlocking     string
+	flagBlockedBy    string
+	flagHasBlockers  bool
+	flagNoBlockers   bool
+	flagEditTitle    string
+	flagStatusAll    bool
+	flagLabelsColor  string
+	flagAddLabels    []string
+	flagFilterLabels []string
+	flagDoD          string
+	flagDesc         string
+	flagJSON         bool
 )
 
 func openDB() (*db.DB, error) {
@@ -408,8 +390,7 @@ Examples:
 var showCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show task details",
-	Long: `Show full details for a task including description, logs, dependencies,
-and suggested concepts for context retrieval.
+	Long: `Show full details for a task including description, logs, and dependencies.
 
 Examples:
   prog show ts-a1b2c3
@@ -442,12 +423,6 @@ Examples:
 		}
 
 		deps, err := database.GetDeps(args[0])
-		if err != nil {
-			return err
-		}
-
-		// Get related concepts for context suggestions
-		concepts, err := database.GetRelatedConcepts(args[0])
 		if err != nil {
 			return err
 		}
@@ -491,7 +466,7 @@ Examples:
 			return nil
 		}
 
-		printItemDetail(item, logs, deps, concepts)
+		printItemDetail(item, logs, deps)
 		return nil
 	},
 }
@@ -530,11 +505,6 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Completed %s\n", args[0])
-
-		// Prompt reflection
-		fmt.Println(`
-Reflect: What would help the next agent? (See instructions for guidance)
-  prog learn "summary" -c concept --detail "explanation"`)
 
 		// Backup after successful mutation
 		database.BackupQuiet()
@@ -1123,7 +1093,7 @@ var labelCmd = &cobra.Command{
 	Short: "Add a label to a task",
 	Long: `Add a label to a task or epic.
 
-Creates the label if it doesn't exist (like concepts).
+Creates the label if it doesn't exist.
 
 Example:
   prog label ts-a1b2c3 bug
@@ -1175,350 +1145,6 @@ Example:
 			return err
 		}
 		fmt.Printf("Removed label %q from %s\n", args[1], args[0])
-		return nil
-	},
-}
-
-var learnCmd = &cobra.Command{
-	Use:   "learn <summary>",
-	Short: "Log a learning for future context retrieval",
-	Long: `Log a learning discovered during work.
-
-Learnings capture tacit knowledge—insights that aren't obvious from code alone.
-They're stored with a two-phase structure for efficient context retrieval:
-
-  Summary (required): One-liner (≤120 chars) for quick scanning
-  Detail (optional): Full explanation with context, examples, and caveats
-
-Learnings are tagged with concepts for organized retrieval.
-Concepts are created automatically if they don't exist.
-
-If a task is in progress for the project, the learning is linked to it.
-
-CONTEXT MANAGEMENT FLOW:
-┌─────────────────────────────────────────────────────────────┐
-│ 1. During Work: Discover a pattern, gotcha, or insight      │
-│    → prog learn "summary" -c concept --detail "full text"   │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Future Retrieval: Load context before starting work     │
-│    → prog context -c concept        # by concept           │
-│    → prog context -q "search term"  # full-text search     │
-│    → prog context --summary         # scan all one-liners  │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 3. Two-Phase Retrieval:                                    │
-│    Phase 1: See summaries (lightweight, fast)              │
-│    Phase 2: Load full detail only when relevant            │
-└─────────────────────────────────────────────────────────────┘
-
-LEARNING STRUCTURE:
-  ┌─────────────────────────────────────┐
-  │ Learning (lrn-XXXXXX)                │
-  │ ├─ Summary: "One-liner for scanning" │
-  │ ├─ Detail: "Full context..."         │
-  │ ├─ Concepts: [auth, concurrency]     │
-  │ ├─ Files: [auth.go, token.go]        │
-  │ ├─ Status: active/stale/archived     │
-  │ └─ Task ID: ts-abc123 (optional)     │
-  └─────────────────────────────────────┘
-
-Examples:
-  prog learn "Token refresh has race condition" -p myproject -c auth -c concurrency
-  prog learn "Config loaded from env first" -p myproject -c config -f config.go
-  prog learn "Token refresh issue" -c auth -p myproject --detail "The mutex only protects..."
-  echo "multi-line detail" | prog learn "summary" -c auth -p myproject --detail -`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validate required flags
-		if flagProject == "" {
-			return fmt.Errorf("project is required (-p)")
-		}
-		if len(flagLearnConcept) == 0 {
-			return fmt.Errorf("at least one concept is required (-c)")
-		}
-
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		project := flagProject
-
-		// Get current in-progress task for this project
-		taskID, _ := database.GetCurrentTaskID(project)
-
-		// Handle detail from stdin
-		detail := flagLearnDetail
-		if detail == "-" {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return fmt.Errorf("failed to read from stdin: %w", err)
-			}
-			detail = strings.TrimSpace(string(data))
-		}
-
-		now := time.Now()
-		learning := &model.Learning{
-			ID:        model.GenerateLearningID(),
-			Project:   project,
-			CreatedAt: now,
-			UpdatedAt: now,
-			TaskID:    taskID,
-			Summary:   strings.Join(args, " "),
-			Detail:    detail,
-			Status:    model.LearningStatusActive,
-			Concepts:  flagLearnConcept,
-			Files:     flagLearnFile,
-		}
-
-		if err := database.CreateLearning(learning); err != nil {
-			return err
-		}
-
-		// Build output
-		output := learning.ID
-		if taskID != nil {
-			output += fmt.Sprintf(" (linked to %s)", *taskID)
-		}
-		fmt.Println(output)
-
-		// Backup after successful mutation
-		database.BackupQuiet()
-
-		return nil
-	},
-}
-
-var learnEditCmd = &cobra.Command{
-	Use:   "edit <learning-id>",
-	Short: "Edit a learning's summary or detail",
-	Long: `Edit an existing learning's summary or detail.
-
-Examples:
-  prog learn edit lrn-abc123 --summary "Updated summary"
-  prog learn edit lrn-abc123 --detail "Full context explanation"
-  echo "multi-line" | prog learn edit lrn-abc123 --detail -`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if flagLearnEditSummary == "" && flagLearnEditDetail == "" {
-			return fmt.Errorf("--summary or --detail is required")
-		}
-
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		if flagLearnEditSummary != "" {
-			if err := database.UpdateLearningSummary(args[0], flagLearnEditSummary); err != nil {
-				return err
-			}
-		}
-
-		if flagLearnEditDetail != "" {
-			detail := flagLearnEditDetail
-			if detail == "-" {
-				data, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("failed to read from stdin: %w", err)
-				}
-				detail = strings.TrimSpace(string(data))
-			}
-			if err := database.UpdateLearningDetail(args[0], detail); err != nil {
-				return err
-			}
-		}
-
-		fmt.Printf("Updated %s\n", args[0])
-		return nil
-	},
-}
-
-var learnStaleCmd = &cobra.Command{
-	Use:   "stale <learning-id> [learning-id...]",
-	Short: "Mark learnings as stale (outdated)",
-	Long: `Mark one or more learnings as stale when they're outdated but still useful for reference.
-
-Examples:
-  prog learn stale lrn-abc123 --reason "Refactored in v2"
-  prog learn stale lrn-a lrn-b lrn-c --reason "Compacted into lrn-xyz"`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		for _, id := range args {
-			if err := database.UpdateLearningStatus(id, model.LearningStatusStale); err != nil {
-				return err
-			}
-		}
-
-		// Output
-		if len(args) == 1 {
-			if flagLearnStaleReason != "" {
-				fmt.Printf("Marked %s as stale: %s\n", args[0], flagLearnStaleReason)
-			} else {
-				fmt.Printf("Marked %s as stale\n", args[0])
-			}
-		} else {
-			if flagLearnStaleReason != "" {
-				fmt.Printf("Marked %d learnings as stale: %s\n", len(args), flagLearnStaleReason)
-			} else {
-				fmt.Printf("Marked %d learnings as stale\n", len(args))
-			}
-		}
-		return nil
-	},
-}
-
-var learnRmCmd = &cobra.Command{
-	Use:   "rm <learning-id>",
-	Short: "Delete a learning",
-	Long: `Permanently delete a learning and its concept associations.
-
-Example:
-  prog learn rm lrn-abc123`,
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		if err := database.DeleteLearning(args[0]); err != nil {
-			return err
-		}
-		fmt.Printf("Deleted %s\n", args[0])
-		return nil
-	},
-}
-
-var conceptsCmd = &cobra.Command{
-	Use:   "concepts [name]",
-	Short: "List or edit concepts for a project",
-	Long: `List all concepts for a project, or edit a concept.
-
-Concepts are knowledge categories that group related learnings.
-They enable organized context retrieval by topic (e.g., "auth", "database", "api").
-
-CONCEPT MODEL:
-  ┌─────────────────────────────────────────────────────────┐
-  │ Concepts (con-XXXXXX)                                    │
-  │ ├─ Name: "auth"                                          │
-  │ ├─ Project: "myproject"                                  │
-  │ ├─ Summary: "Authentication patterns and gotchas"        │
-  │ └─ Learning Count: 5                                     │
-  └─────────────────────────────────────────────────────────┘
-           │
-           │ many-to-many
-           │
-           ↓
-  ┌─────────────────────────────────────────────────────────┐
-  │ Learnings                                                │
-  │ ├─ lrn-abc: "Token refresh race condition" [auth]       │
-  │ ├─ lrn-def: "JWT validation edge case" [auth]           │
-  │ └─ lrn-ghi: "Session timeout handling" [auth]            │
-  └─────────────────────────────────────────────────────────┘
-
-RETRIEVAL PATTERNS:
-  1. By Concept: prog context -c auth
-     → Returns all learnings tagged with "auth"
-  
-  2. By Task: prog concepts --related ts-abc123
-     → Suggests concepts based on task title/description
-     → Then: prog context -c <suggested-concept>
-  
-  3. Full-Text Search: prog context -q "token refresh"
-     → Searches across all learning summaries and details
-
-Default sort is by learning count (most used first).
-
-Examples:
-  prog concepts -p myproject                        # list concepts
-  prog concepts -p myproject --recent               # sort by last updated
-  prog concepts -p myproject --stats                # show count and oldest age
-  prog concepts --related ts-abc123                 # suggest concepts for a task
-  prog concepts fts -p myproject --summary "..."    # set concept summary
-  prog concepts fts -p myproject --rename "search"  # rename concept`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		// Edit mode: concept name provided with --summary or --rename
-		if len(args) > 0 && (flagConceptsSummary != "" || flagConceptsRename != "") {
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p)")
-			}
-			if flagConceptsSummary != "" {
-				if err := database.SetConceptSummary(args[0], flagProject, flagConceptsSummary); err != nil {
-					return err
-				}
-				fmt.Printf("Updated %s\n", args[0])
-			}
-			if flagConceptsRename != "" {
-				if err := database.RenameConcept(args[0], flagConceptsRename, flagProject); err != nil {
-					return err
-				}
-				fmt.Printf("Renamed %s -> %s\n", args[0], flagConceptsRename)
-			}
-			return nil
-		}
-
-		// Stats mode
-		if flagConceptsStats {
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p)")
-			}
-			stats, err := database.ListConceptsWithStats(flagProject)
-			if err != nil {
-				return err
-			}
-			if len(stats) == 0 {
-				fmt.Println("No concepts")
-				return nil
-			}
-			printConceptsStats(stats)
-			return nil
-		}
-
-		// List mode
-		var concepts []model.Concept
-
-		if flagConceptsRelated != "" {
-			// Get concepts related to a task
-			concepts, err = database.GetRelatedConcepts(flagConceptsRelated)
-			if err != nil {
-				return err
-			}
-		} else {
-			// List all concepts for project
-			if flagProject == "" {
-				return fmt.Errorf("project is required (-p) or use --related <task-id>")
-			}
-			concepts, err = database.ListConcepts(flagProject, flagConceptsRecent)
-			if err != nil {
-				return err
-			}
-		}
-
-		if len(concepts) == 0 {
-			fmt.Println("No concepts")
-			return nil
-		}
-
-		printConceptsTable(concepts)
 		return nil
 	},
 }
@@ -1653,124 +1279,6 @@ Example:
 			return err
 		}
 		fmt.Printf("Renamed label: %s -> %s\n", args[0], args[1])
-		return nil
-	},
-}
-
-var contextCmd = &cobra.Command{
-	Use:   "context",
-	Short: "Retrieve learnings for context",
-	Long: `Retrieve learnings by concept, full-text search, or specific ID.
-
-Use this to load relevant context before starting work on a task.
-
-Examples:
-  prog context -p myproject --summary                # all learnings, grouped by concept
-  prog context -c auth -c concurrency -p myproject   # by concepts
-  prog context -q "rate limit" -p myproject          # full-text search
-  prog context -c auth --summary -p myproject        # one-liner per learning
-  prog context --id lrn-abc123                       # specific learning by ID
-  prog context -c auth --include-stale -p myproject  # include stale learnings
-  prog context -c auth --json -p myproject           # JSON output for agents`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = database.Close() }()
-
-		// Mode 1: Specific learning by ID
-		if flagContextID != "" {
-			learning, err := database.GetLearning(flagContextID)
-			if err != nil {
-				return err
-			}
-			if flagContextJSON {
-				return printLearningsJSON([]model.Learning{*learning})
-			}
-			printLearnings([]model.Learning{*learning})
-			return nil
-		}
-
-		// All other modes require project
-		if flagProject == "" {
-			return fmt.Errorf("project is required (-p) or use --id")
-		}
-
-		// Mode 2: All learnings with --summary (no concepts/query required)
-		if flagContextSummary && len(flagContextConcept) == 0 && flagContextQuery == "" {
-			learnings, err := database.GetAllLearnings(flagProject, flagContextStale)
-			if err != nil {
-				return err
-			}
-
-			if len(learnings) == 0 {
-				if flagContextJSON {
-					fmt.Println("[]")
-					return nil
-				}
-				fmt.Println("No learnings found")
-				return nil
-			}
-
-			if flagContextJSON {
-				return printLearningsJSON(learnings)
-			}
-
-			// Get concept summaries for grouped output
-			concepts, _ := database.ListConcepts(flagProject, false)
-			conceptMap := make(map[string]string)
-			for _, c := range concepts {
-				conceptMap[c.Name] = c.Summary
-			}
-			printAllLearningSummaries(learnings, conceptMap)
-			return nil
-		}
-
-		// Modes 3 & 4 require concepts or query
-		if len(flagContextConcept) == 0 && flagContextQuery == "" {
-			return fmt.Errorf("specify concepts (-c), query (-q), or use --summary for all")
-		}
-
-		var learnings []model.Learning
-
-		if len(flagContextConcept) > 0 {
-			learnings, err = database.GetLearningsByConcepts(flagProject, flagContextConcept, flagContextStale)
-		} else {
-			learnings, err = database.SearchLearnings(flagProject, flagContextQuery, flagContextStale)
-		}
-		if err != nil {
-			return err
-		}
-
-		if len(learnings) == 0 {
-			if flagContextJSON {
-				fmt.Println("[]")
-				return nil
-			}
-			fmt.Println("No learnings found")
-			return nil
-		}
-
-		// JSON mode
-		if flagContextJSON {
-			return printLearningsJSON(learnings)
-		}
-
-		// Mode 3: Summary mode (one-liners) for specific concepts
-		if flagContextSummary {
-			// Get concept summaries for header
-			concepts, _ := database.ListConcepts(flagProject, false)
-			conceptMap := make(map[string]string)
-			for _, c := range concepts {
-				conceptMap[c.Name] = c.Summary
-			}
-			printLearningSummaries(learnings, flagContextConcept, conceptMap)
-			return nil
-		}
-
-		// Mode 4: Full output
-		printLearnings(learnings)
 		return nil
 	},
 }
@@ -2075,46 +1583,6 @@ Example hook configuration in Claude Code settings:
 	},
 }
 
-var compactCmd = &cobra.Command{
-	Use:   "compact",
-	Short: "Output compaction workflow guidance for agents",
-	Long: `Output guidance for grooming learnings and concepts.
-
-Use this when learnings have accumulated and need review.
-Covers identifying redundancy, staleness, and quality issues.
-
-The workflow uses two phases:
-1. Discovery: Scan summaries to identify grooming candidates
-2. Selection: Load detail for candidates, groom, repeat
-
-Example:
-  prog compact              # Output compaction guidance
-  prog compact -p myproject # Include project-specific stats`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
-		if err != nil {
-			printCompactContent(nil)
-			return nil
-		}
-		defer func() { _ = database.Close() }()
-
-		var stats []db.ConceptStats
-		if flagProject != "" {
-			stats, _ = database.ListConceptsWithStats(flagProject)
-		} else {
-			// Get stats across all projects
-			projects, _ := database.ListProjects()
-			for _, p := range projects {
-				pStats, _ := database.ListConceptsWithStats(p)
-				stats = append(stats, pStats...)
-			}
-		}
-
-		printCompactContent(stats)
-		return nil
-	},
-}
-
 var flagBackupQuiet bool
 
 var backupCmd = &cobra.Command{
@@ -2326,30 +1794,6 @@ func init() {
 	statusCmd.Flags().BoolVar(&flagStatusAll, "all", false, "Show all ready tasks (default: limit to 10)")
 	statusCmd.Flags().StringArrayVarP(&flagFilterLabels, "label", "l", nil, "Filter by label (can be repeated, AND logic)")
 
-	// learn flags
-	learnCmd.Flags().StringArrayVarP(&flagLearnConcept, "concept", "c", nil, "Concept to tag this learning with (can be repeated)")
-	learnCmd.Flags().StringArrayVarP(&flagLearnFile, "file", "f", nil, "Related file (can be repeated)")
-	learnCmd.Flags().StringVar(&flagLearnDetail, "detail", "", "Full context/explanation (use '-' for stdin)")
-
-	// learn subcommands
-	learnCmd.AddCommand(learnEditCmd)
-	learnCmd.AddCommand(learnStaleCmd)
-	learnCmd.AddCommand(learnRmCmd)
-
-	// learn edit flags
-	learnEditCmd.Flags().StringVar(&flagLearnEditSummary, "summary", "", "New summary for the learning")
-	learnEditCmd.Flags().StringVar(&flagLearnEditDetail, "detail", "", "New detail for the learning (use '-' for stdin)")
-
-	// learn stale flags
-	learnStaleCmd.Flags().StringVar(&flagLearnStaleReason, "reason", "", "Reason for marking as stale")
-
-	// concepts flags
-	conceptsCmd.Flags().BoolVar(&flagConceptsRecent, "recent", false, "Sort by last updated instead of learning count")
-	conceptsCmd.Flags().StringVar(&flagConceptsRelated, "related", "", "Suggest concepts related to a task")
-	conceptsCmd.Flags().StringVar(&flagConceptsSummary, "summary", "", "Set concept summary (requires concept name as argument)")
-	conceptsCmd.Flags().StringVar(&flagConceptsRename, "rename", "", "Rename concept (requires concept name as argument)")
-	conceptsCmd.Flags().BoolVar(&flagConceptsStats, "stats", false, "Show statistics (count and oldest learning age)")
-
 	// labels flags
 	labelsAddCmd.Flags().StringVar(&flagLabelsColor, "color", "", "Label color (hex, e.g. #ff0000)")
 
@@ -2357,14 +1801,6 @@ func init() {
 	labelsCmd.AddCommand(labelsAddCmd)
 	labelsCmd.AddCommand(labelsRmCmd)
 	labelsCmd.AddCommand(labelsRenameCmd)
-
-	// context flags
-	contextCmd.Flags().StringArrayVarP(&flagContextConcept, "concept", "c", nil, "Concept to retrieve learnings for (can be repeated)")
-	contextCmd.Flags().StringVarP(&flagContextQuery, "query", "q", "", "Full-text search query")
-	contextCmd.Flags().BoolVar(&flagContextStale, "include-stale", false, "Include stale learnings in results")
-	contextCmd.Flags().BoolVar(&flagContextSummary, "summary", false, "Show one-liner per learning (no detail)")
-	contextCmd.Flags().StringVar(&flagContextID, "id", "", "Load specific learning by ID")
-	contextCmd.Flags().BoolVar(&flagContextJSON, "json", false, "Output as JSON for machine processing")
 
 	// backup flags
 	backupCmd.Flags().BoolVarP(&flagBackupQuiet, "quiet", "q", false, "Silent backup (no output)")
@@ -2393,12 +1829,8 @@ func init() {
 	rootCmd.AddCommand(blocksCmd)
 	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(unlabelCmd)
-	rootCmd.AddCommand(learnCmd)
-	rootCmd.AddCommand(conceptsCmd)
 	rootCmd.AddCommand(labelsCmd)
-	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(primeCmd)
-	rootCmd.AddCommand(compactCmd)
 	rootCmd.AddCommand(onboardCmd)
 	rootCmd.AddCommand(tuiCmd)
 	rootCmd.AddCommand(backupCmd)
@@ -2463,7 +1895,7 @@ func formatLabels(labels []string) string {
 	return strings.Join(parts, " ")
 }
 
-func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts []model.Concept) {
+func printItemDetail(item *model.Item, logs []model.Log, deps []string) {
 	fmt.Printf("ID:          %s\n", item.ID)
 	fmt.Printf("Type:        %s\n", item.Type)
 	fmt.Printf("Project:     %s\n", item.Project)
@@ -2499,19 +1931,6 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string, concepts
 		}
 	}
 
-	if len(concepts) > 0 {
-		fmt.Printf("\nSuggested context:\n")
-		var conceptFlags []string
-		for _, c := range concepts {
-			summary := c.Summary
-			if summary == "" {
-				summary = "(no summary)"
-			}
-			fmt.Printf("  %s (%d) - %s\n", c.Name, c.LearningCount, summary)
-			conceptFlags = append(conceptFlags, "-c "+c.Name)
-		}
-		fmt.Printf("\nLoad with: prog context %s -p %s --summary\n", strings.Join(conceptFlags, " "), item.Project)
-	}
 }
 
 func printStatusReport(report *db.StatusReport, showAll bool) {
@@ -2601,41 +2020,6 @@ func formatStatusItem(item model.Item, showProject, showPriority bool) string {
 	return strings.Join(parts, " ")
 }
 
-func printConceptsTable(concepts []model.Concept) {
-	fmt.Printf("%-20s %10s  %-12s  %s\n", "NAME", "LEARNINGS", "LAST UPDATED", "SUMMARY")
-	for _, c := range concepts {
-		ago := formatTimeAgo(c.LastUpdated)
-		summary := c.Summary
-		if len(summary) > 40 {
-			summary = summary[:37] + "..."
-		}
-		fmt.Printf("%-20s %10d  %-12s  %s\n", c.Name, c.LearningCount, ago, summary)
-	}
-}
-
-func printConceptsStats(stats []db.ConceptStats) {
-	fmt.Printf("%-20s %6s  %s\n", "CONCEPT", "COUNT", "OLDEST")
-	for _, s := range stats {
-		oldest := "-"
-		if s.OldestAge != nil {
-			oldest = formatDurationShort(*s.OldestAge)
-		}
-		fmt.Printf("%-20s %6d  %s\n", s.Name, s.LearningCount, oldest)
-	}
-}
-
-func formatDurationShort(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	if days > 0 {
-		return fmt.Sprintf("%dd", days)
-	}
-	hours := int(d.Hours())
-	if hours > 0 {
-		return fmt.Sprintf("%dh", hours)
-	}
-	return "<1h"
-}
-
 func printLabelsTable(labels []model.Label) {
 	fmt.Printf("%-20s  %-12s  %s\n", "NAME", "CREATED", "COLOR")
 	for _, l := range labels {
@@ -2645,40 +2029,6 @@ func printLabelsTable(labels []model.Label) {
 			color = "-"
 		}
 		fmt.Printf("%-20s  %-12s  %s\n", l.Name, ago, color)
-	}
-}
-
-func printLearnings(learnings []model.Learning) {
-	for i, l := range learnings {
-		if i > 0 {
-			fmt.Println()
-		}
-
-		// Header with ID, status, and age
-		status := ""
-		if l.Status == model.LearningStatusStale {
-			status = " [stale]"
-		}
-		fmt.Printf("## %s%s (%s)\n", l.ID, status, formatTimeAgo(l.CreatedAt))
-
-		// Summary
-		fmt.Println(l.Summary)
-
-		// Detail if present
-		if l.Detail != "" {
-			fmt.Printf("\n%s\n", l.Detail)
-		}
-
-		// Metadata
-		if len(l.Concepts) > 0 {
-			fmt.Printf("\nConcepts: %s\n", strings.Join(l.Concepts, ", "))
-		}
-		if len(l.Files) > 0 {
-			fmt.Printf("Files: %s\n", strings.Join(l.Files, ", "))
-		}
-		if l.TaskID != nil {
-			fmt.Printf("Task: %s\n", *l.TaskID)
-		}
 	}
 }
 
@@ -2755,108 +2105,6 @@ type LogJSON struct {
 	CreatedAt Timestamp `json:"created_at"`
 }
 
-// LearningJSON is the JSON serialization format for learnings.
-type LearningJSON struct {
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	Detail    string    `json:"detail,omitempty"`
-	Concepts  []string  `json:"concepts"`
-	Files     []string  `json:"files,omitempty"`
-	CreatedAt Timestamp `json:"created_at"`
-	Status    string    `json:"status"`
-}
-
-func printLearningsJSON(learnings []model.Learning) error {
-	output := make([]LearningJSON, 0, len(learnings))
-	for _, l := range learnings {
-		lj := LearningJSON{
-			ID:        l.ID,
-			Summary:   l.Summary,
-			Detail:    l.Detail,
-			Concepts:  l.Concepts,
-			Files:     l.Files,
-			CreatedAt: Timestamp(l.CreatedAt),
-			Status:    string(l.Status),
-		}
-		if lj.Concepts == nil {
-			lj.Concepts = []string{}
-		}
-		output = append(output, lj)
-	}
-	b, err := json.MarshalIndent(output, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
-	}
-	fmt.Println(string(b))
-	return nil
-}
-
-func printLearningSummaries(learnings []model.Learning, requestedConcepts []string, conceptSummaries map[string]string) {
-	// Print concept headers with summaries
-	for _, conceptName := range requestedConcepts {
-		summary := conceptSummaries[conceptName]
-		if summary == "" {
-			summary = "(no summary)"
-		}
-		fmt.Printf("%s: %s\n", conceptName, summary)
-	}
-	if len(requestedConcepts) > 0 {
-		fmt.Println()
-	}
-
-	// Print one-liner per learning
-	for _, l := range learnings {
-		status := ""
-		if l.Status == model.LearningStatusStale {
-			status = " [stale]"
-		}
-		fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
-	}
-}
-
-func printAllLearningSummaries(learnings []model.Learning, conceptSummaries map[string]string) {
-	// Group learnings by concept
-	type conceptGroup struct {
-		summary   string
-		learnings []model.Learning
-	}
-	groups := make(map[string]*conceptGroup)
-	conceptOrder := []string{}
-
-	for _, l := range learnings {
-		for _, conceptName := range l.Concepts {
-			if groups[conceptName] == nil {
-				groups[conceptName] = &conceptGroup{
-					summary: conceptSummaries[conceptName],
-				}
-				conceptOrder = append(conceptOrder, conceptName)
-			}
-			groups[conceptName].learnings = append(groups[conceptName].learnings, l)
-		}
-	}
-
-	// Print grouped by concept
-	for i, conceptName := range conceptOrder {
-		if i > 0 {
-			fmt.Println()
-		}
-		group := groups[conceptName]
-		summary := group.summary
-		if summary == "" {
-			summary = "(no summary)"
-		}
-		fmt.Printf("%s: %s\n", conceptName, summary)
-
-		for _, l := range group.learnings {
-			status := ""
-			if l.Status == model.LearningStatusStale {
-				status = " [stale]"
-			}
-			fmt.Printf("  %s: %s%s\n", l.ID, l.Summary, status)
-		}
-	}
-}
-
 func formatTimeAgo(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -2913,11 +2161,8 @@ Run 'prog status' to see current state.
 ## Starting Work
 
 When picking up a task:
-1. prog show <task>                 # See task + suggested concepts
-2. prog context -c X -c Y           # Load relevant concepts
-   prog context -c X --summary      # Or scan first if many learnings
-
-Load context that's relevant to your task. Don't skip it, don't load everything.
+1. prog show <task>                 # See task, logs and Definition of Done
+2. prog start <task>                # Claim it
 
 ## SESSION CLOSE PROTOCOL
 
@@ -2934,7 +2179,7 @@ Before ending ANY session, you MUST complete ALL of these steps:
    Run the relevant commands to confirm outputs match the code.
 
 3. Update task status:
-   - prog done <id>     # if complete (will prompt for reflection)
+   - prog done <id>     # if complete
    - prog open <id>     # reopen if needed
 
 4. Add handoff context for next agent:
@@ -2942,32 +2187,6 @@ Before ending ANY session, you MUST complete ALL of these steps:
 
 5. Update parent epic (if task is part of one):
    prog append <epic-id> "Completed X, next: Y"
-
-## Logging Learnings
-
-When prog done prompts for reflection, ask: What would help the next agent?
-  - What pattern or technique proved effective?
-  - What gotcha would trap someone unfamiliar?
-  - What's not obvious from reading the code?
-
-Validate insights with the user before logging.
-
-To log (ALWAYS include both summary AND detail):
-  prog concepts                              # Check existing concepts first
-  prog learn "summary" -c concept --detail "full explanation"
-
-Why both? Two-phase retrieval:
-  - Summary: one-liner for scanning/discovery
-  - Detail: full context when selected
-  Without detail, future agents get only the one-liner.
-
-Good learnings are specific and actionable:
-  ✓ prog learn "Schema migrations need built binary" -c database \
-      --detail "go run doesn't embed assets; must use go build first"
-
-Not learnings (use prog log instead):
-  ✗ "Fixed the auth bug"
-  ✗ "This file handles authentication"
 
 NEVER end a session without updating task state.
 Work is NOT complete until prog reflects reality.
@@ -2994,7 +2213,7 @@ Tasks with DoD show [DoD] in 'prog ready' output.
 # Finding work
 prog status              # Overview
 prog ready               # Tasks ready to work on
-prog show <id>           # Full details + suggested concepts
+prog show <id>           # Full details
 
 # Working
 prog start <id>          # Claim a task
@@ -3012,12 +2231,6 @@ prog add "title" -e                   # New epic
 # Editing
 prog append <id> "text"        # Add to description
 prog label <id> <name>         # Add label to task
-
-# Context retrieval
-prog context -c concept        # Load learnings for a concept
-prog context -c X --summary    # Scan one-liners first
-prog concepts                  # List available concepts
-prog learn "summary" -c X --detail "explanation"  # Log with both parts
 
 # Filtering
 prog list -p myproject         # Filter by project
@@ -3052,90 +2265,5 @@ prog ready -p myproject        # Ready in project`)
 		fmt.Println("\nRun 'prog ready [-p project]' to find unblocked work.")
 	} else {
 		fmt.Println("\n(No database connection - run 'prog init' if needed)")
-	}
-}
-
-func printCompactContent(stats []db.ConceptStats) {
-	fmt.Println(`# Compact Learnings
-
-Groom learnings and concepts using two phases: **discovery** then **selection**.
-
-## Why Compact?
-
-Over time, learnings accumulate. Without grooming:
-- Redundant entries waste context tokens
-- Stale learnings mislead agents
-- Unclear summaries reduce retrieval value
-- Fragmented insights are harder to find
-
-Compaction keeps the knowledge base high-signal and navigable.
-
-## Phase 1: Discovery
-
-Scan all learning summaries grouped by concept:
-
-` + "```" + `bash
-prog context -p <project> --summary   # All learnings, grouped by concept
-` + "```" + `
-
-Flag candidates:
-- **Redundant**: Similar summaries (potential duplicates)
-- **Stale**: References old code/patterns, or old learnings (7+ days) that may be outdated
-- **Low quality**: Vague summaries, missing detail, not actionable
-- **Fragmented**: Related small learnings that should be one
-
-Present candidates to user. Confirm which to address.
-
-## Phase 2: Selection & Grooming
-
-Load full detail only for flagged candidates:
-
-` + "```" + `bash
-prog context --id lrn-abc123          # Specific learning
-` + "```" + `
-
-For each candidate, determine action:
-- **Archive**: Redundant or superseded → ` + "`prog learn stale <id> --reason \"...\"`" + `
-- **Update**: Valid but unclear → ` + "`prog learn edit <id> --summary \"...\"`" + `
-- **Consolidate**: Merge related → archive originals, create new combined learning
-- **Keep**: No changes needed
-
-Present changes to user. Execute after approval.
-
-## Repeat
-
-After each batch:
-- Re-run discovery if significant changes
-- Continue until no candidates remain or user is satisfied
-
-## Quality Guidelines
-
-**Good summaries**: Specific, actionable, self-contained
-**Archive when**: Superseded, redundant, or references removed code
-**Consolidate when**: Multiple learnings express the same insight
-**Update when**: Insight valid but poorly expressed`)
-
-	// Show current stats if available
-	if len(stats) > 0 {
-		fmt.Println("\n## Current Stats")
-		fmt.Printf("\n%-20s %6s  %s\n", "CONCEPT", "COUNT", "OLDEST")
-		for _, s := range stats {
-			oldest := "-"
-			if s.OldestAge != nil {
-				oldest = formatDurationShort(*s.OldestAge)
-			}
-			fmt.Printf("%-20s %6d  %s\n", s.Name, s.LearningCount, oldest)
-		}
-
-		// Highlight compaction candidates
-		var candidates []string
-		for _, s := range stats {
-			if s.LearningCount >= 5 {
-				candidates = append(candidates, s.Name)
-			}
-		}
-		if len(candidates) > 0 {
-			fmt.Printf("\nCompaction candidates (5+ learnings): %s\n", strings.Join(candidates, ", "))
-		}
 	}
 }

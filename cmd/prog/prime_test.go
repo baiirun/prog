@@ -152,9 +152,6 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 		"prog open",
 		"prog add",
 		"prog append",
-		"prog context",
-		"prog concepts",
-		"prog learn",
 	}
 
 	for _, cmd := range commands {
@@ -164,22 +161,21 @@ func TestPrintPrimeContent_EssentialCommands(t *testing.T) {
 	}
 }
 
-func TestPrintPrimeContent_ContextRetrieval(t *testing.T) {
+func TestPrintPrimeContent_NoLearnings(t *testing.T) {
 	output := captureOutput(func() {
 		printPrimeContent(nil)
 	})
 
-	// Should contain Starting Work section
 	if !strings.Contains(output, "Starting Work") {
 		t.Error("missing Starting Work section")
 	}
 
-	// Should indicate that prog done prompts for reflection
-	if !strings.Contains(output, "prog done") {
-		t.Error("missing prog done command")
-	}
-	if !strings.Contains(output, "will prompt for reflection") {
-		t.Error("should indicate prog done prompts for reflection")
+	// Learnings were removed; prime must not point agents at commands that no
+	// longer exist.
+	for _, gone := range []string{"prog learn", "prog context", "prog concepts", "reflection"} {
+		if strings.Contains(output, gone) {
+			t.Errorf("prime still mentions %q", gone)
+		}
 	}
 }
 

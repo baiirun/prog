@@ -447,7 +447,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				Title:    text,
 				Status:   model.StatusOpen,
 				Priority: 2,
-			})
+			}, tasks.ItemLinks{})
 			if err != nil {
 				return actionMsg{err: err}
 			}

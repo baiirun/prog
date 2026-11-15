@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/baiirun/prog/internal/model"
@@ -26,9 +27,19 @@ func (s *Service) Graph(ctx context.Context) (*Graph, error) {
 	return NewGraph(items, deps)
 }
 
-// CreateItem validates type and status, normalizes the project and ensures it
-// exists, then creates the item.
-func (s *Service) CreateItem(ctx context.Context, item model.NewItem) (model.Item, error) {
+// ItemLinks are records created together with a new item.
+type ItemLinks struct {
+	Blocks []string // IDs of items that will depend on the new item
+	Labels []string // label names, created in the item's project if missing
+}
+
+// CreateItem creates an item together with its parent link, dependents and
+// labels, so `prog add` never leaves a partly linked item behind.
+// Ensures: invalid input (bad type or status, a missing or non-epic parent,
+// a missing Blocks target) is rejected before anything is written. If a
+// later write fails, the new item is deleted again; if that also fails, the
+// error names the item so it can be removed by hand.
+func (s *Service) CreateItem(ctx context.Context, item model.NewItem, links ItemLinks) (model.Item, error) {
 	if !item.Type.IsValid() {
 		return model.Item{}, fmt.Errorf("invalid item type: %s", item.Type)
 	}
@@ -36,12 +47,64 @@ func (s *Service) CreateItem(ctx context.Context, item model.NewItem) (model.Ite
 		return model.Item{}, fmt.Errorf("invalid status: %s", item.Status)
 	}
 	item.Project = model.NormalizeProject(item.Project)
+
+	g, err := s.Graph(ctx)
+	if err != nil {
+		return model.Item{}, err
+	}
+	if item.ParentID != nil {
+		if err := requireEpic(g, *item.ParentID); err != nil {
+			return model.Item{}, err
+		}
+	}
+	for _, id := range links.Blocks {
+		if _, err := g.Item(id); err != nil {
+			return model.Item{}, err
+		}
+	}
+
 	if item.Project != "" {
 		if err := s.store.EnsureProject(ctx, item.Project); err != nil {
 			return model.Item{}, err
 		}
 	}
-	return s.store.CreateItem(ctx, item)
+	created, err := s.store.CreateItem(ctx, item)
+	if err != nil {
+		return model.Item{}, err
+	}
+	if err := s.link(ctx, created, links); err != nil {
+		if rollbackErr := s.store.DeleteItem(ctx, created.ID); rollbackErr != nil {
+			return model.Item{}, errors.Join(err, fmt.Errorf("could not remove partly created item %s, delete it by hand: %w", created.ID, rollbackErr))
+		}
+		return model.Item{}, err
+	}
+	return created, nil
+}
+
+func (s *Service) link(ctx context.Context, item model.Item, links ItemLinks) error {
+	for _, dependent := range links.Blocks {
+		if err := s.store.AddDep(ctx, dependent, item.ID); err != nil {
+			return err
+		}
+	}
+	for _, name := range links.Labels {
+		if err := s.store.AddLabelToItem(ctx, item.ID, item.Project, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// requireEpic fails unless id names an existing epic.
+func requireEpic(g *Graph, id string) error {
+	parent, err := g.Item(id)
+	if err != nil {
+		return fmt.Errorf("parent %w", err)
+	}
+	if parent.Type != model.ItemTypeEpic {
+		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
+	}
+	return nil
 }
 
 // SetStatus changes an item's stored status.
@@ -71,12 +134,8 @@ func (s *Service) SetParent(ctx context.Context, id, parentID string) error {
 	if _, err := g.Item(id); err != nil {
 		return err
 	}
-	parent, err := g.Item(parentID)
-	if err != nil {
-		return fmt.Errorf("parent %w", err)
-	}
-	if parent.Type != model.ItemTypeEpic {
-		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
+	if err := requireEpic(g, parentID); err != nil {
+		return err
 	}
 	return s.store.SetParent(ctx, id, parentID)
 }

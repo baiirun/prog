@@ -27,7 +27,8 @@ type Store interface {
 	LoadGraph(ctx context.Context) ([]model.Item, []model.Dep, error)
 
 	// CreateItem stores a new item and returns it with its assigned ID.
-	// Requires: the item's project exists (see EnsureProject).
+	// Requires: the item's project exists (see EnsureProject), and its
+	// ParentID, if set, names an existing item.
 	CreateItem(ctx context.Context, item model.NewItem) (model.Item, error)
 	// DeleteItem atomically removes an item with its logs, labels and
 	// dependency edges. Fails, deleting nothing, if the item has children.

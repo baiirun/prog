@@ -88,6 +88,7 @@ type NewItem struct {
 	DefinitionOfDone *string
 	Status           Status
 	Priority         int
+	ParentID         *string // optional parent epic
 }
 
 // NewLabel is the caller-supplied part of a label; the store assigns ID and timestamps.

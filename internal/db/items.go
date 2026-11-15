@@ -23,14 +23,15 @@ func (db *DB) CreateItem(ctx context.Context, in model.NewItem) (model.Item, err
 		DefinitionOfDone: in.DefinitionOfDone,
 		Status:           in.Status,
 		Priority:         in.Priority,
+		ParentID:         in.ParentID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
 	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO items (id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description, item.DefinitionOfDone,
-		item.Status, item.Priority, item.CreatedAt, item.UpdatedAt,
+		item.Status, item.Priority, item.ParentID, item.CreatedAt, item.UpdatedAt,
 	)
 	if err != nil {
 		return model.Item{}, fmt.Errorf("failed to create item: %w", err)

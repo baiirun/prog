@@ -191,32 +191,17 @@ Examples:
 			newItem.Description = flagDesc
 		}
 
-		item, err := svc.CreateItem(ctx, newItem)
+		if flagParent != "" {
+			newItem.ParentID = &flagParent
+		}
+		links := tasks.ItemLinks{Labels: flagAddLabels}
+		if flagBlocks != "" {
+			links.Blocks = []string{flagBlocks}
+		}
+
+		item, err := svc.CreateItem(ctx, newItem, links)
 		if err != nil {
 			return err
-		}
-
-		// Set parent if specified
-		if flagParent != "" {
-			if err := svc.SetParent(ctx, item.ID, flagParent); err != nil {
-				return err
-			}
-		}
-
-		// Add blocking relationship if specified
-		if flagBlocks != "" {
-			// This new item blocks the specified item
-			// (the blocked item depends on this new one)
-			if err := svc.AddDep(ctx, flagBlocks, item.ID); err != nil {
-				return err
-			}
-		}
-
-		// Add labels if specified
-		for _, labelName := range flagAddLabels {
-			if err := svc.AddLabel(ctx, item.ID, labelName); err != nil {
-				return err
-			}
 		}
 
 		fmt.Println(item.ID)
@@ -706,6 +691,9 @@ Example:
 		defer func() { _ = database.Close() }()
 		ctx := cmd.Context()
 
+		// Back up before, not after: delete is the one change that can't be
+		// undone, so the backup must still contain the item.
+		database.BackupQuiet()
 		if err := svc.DeleteItem(ctx, args[0]); err != nil {
 			return err
 		}
@@ -1677,11 +1665,11 @@ Shows backups in ~/.prog/backups/, newest first.`,
 			return nil
 		}
 
-		fmt.Printf("%-30s  %10s  %s\n", "BACKUP", "SIZE", "CREATED")
+		fmt.Printf("%-32s  %10s  %s\n", "BACKUP", "SIZE", "CREATED")
 		for _, b := range backups {
 			size := formatSize(b.Size)
 			age := formatTimeAgo(b.ModTime)
-			fmt.Printf("%-30s  %10s  %s\n", b.Name, size, age)
+			fmt.Printf("%-32s  %10s  %s\n", b.Name, size, age)
 		}
 		return nil
 	},
@@ -1696,7 +1684,7 @@ This replaces the current database with the backup.
 A backup of the current database is created first.
 
 Examples:
-  prog restore ~/.prog/backups/prog-2024-01-09T12-00-00.db
+  prog restore ~/.prog/backups/prog-2024-01-09T12-00-00.000.db
   prog restore ~/my-backup.db`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

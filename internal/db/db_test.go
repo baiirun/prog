@@ -616,3 +616,21 @@ func TestSetters_BumpUpdatedAt(t *testing.T) {
 		})
 	}
 }
+
+// Protects backups for back-to-back mutations: an agent's `add` then `start`
+// in the same second must produce two backups, not silently drop the second.
+func TestBackup_TwoInOneSecond(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := setupTestDB(t)
+	first, err := db.Backup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.Backup()
+	if err != nil {
+		t.Fatalf("second backup in the same second: %v", err)
+	}
+	if first == second {
+		t.Errorf("both backups wrote %s", first)
+	}
+}

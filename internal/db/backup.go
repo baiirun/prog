@@ -38,8 +38,9 @@ func (db *DB) Backup() (string, error) {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// Generate timestamped filename
-	timestamp := time.Now().Format("2006-01-02T15-04-05")
+	// Milliseconds keep back-to-back mutations from colliding: VACUUM INTO
+	// refuses to overwrite, so a second backup in the same second would fail.
+	timestamp := time.Now().Format("2006-01-02T15-04-05.000")
 	backupFile := filepath.Join(backupDir, fmt.Sprintf("prog-%s.db", timestamp))
 
 	if err := db.BackupTo(backupFile); err != nil {
@@ -64,10 +65,12 @@ func (db *DB) BackupTo(path string) error {
 	return nil
 }
 
-// BackupQuiet creates a backup without printing any output.
-// Errors are silently ignored.
+// BackupQuiet creates a backup after a mutation. A failed backup must not
+// fail the command that already succeeded, so it is reported on stderr.
 func (db *DB) BackupQuiet() {
-	_, _ = db.Backup()
+	if _, err := db.Backup(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: automatic backup failed: %v\n", err)
+	}
 }
 
 // ListBackups returns a list of available backup files, newest first.

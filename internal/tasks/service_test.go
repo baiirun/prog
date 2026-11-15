@@ -35,7 +35,7 @@ func create(t *testing.T, svc *tasks.Service, project string, typ model.ItemType
 	t.Helper()
 	item, err := svc.CreateItem(context.Background(), model.NewItem{
 		Project: project, Type: typ, Title: title, Status: status, Priority: 2,
-	})
+	}, tasks.ItemLinks{})
 	if err != nil {
 		t.Fatalf("create %q: %v", title, err)
 	}
@@ -129,10 +129,10 @@ func TestCreateItem_AssignsPrefixedIDAndNormalizesProject(t *testing.T) {
 		t.Errorf("ListProjects = %q, want [alpha]", projects)
 	}
 
-	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: "story", Title: "x", Status: model.StatusOpen}); err == nil {
+	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: "story", Title: "x", Status: model.StatusOpen}, tasks.ItemLinks{}); err == nil {
 		t.Error("CreateItem accepted an invalid type")
 	}
-	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "x", Status: "bogus"}); err == nil {
+	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "x", Status: "bogus"}, tasks.ItemLinks{}); err == nil {
 		t.Error("CreateItem accepted an invalid status")
 	}
 }
@@ -177,5 +177,35 @@ func TestAddRemoveLabel_UseItemsProject(t *testing.T) {
 	}
 	if got, _ := graph(t, svc).Item(task.ID); len(got.Labels) != 0 {
 		t.Errorf("Labels after RemoveLabel = %v, want none", got.Labels)
+	}
+}
+
+// failingLabels is the real store with AddLabelToItem failing, standing in for
+// an I/O error after the item row is written.
+type failingLabels struct{ tasks.Store }
+
+func (failingLabels) AddLabelToItem(context.Context, string, string, string) error {
+	return errors.New("disk full")
+}
+
+// Protects CreateItem's all-or-nothing promise: a write that fails after the
+// item exists removes the item again instead of leaving it half linked.
+func TestCreateItem_RollsBackWhenLinkingFails(t *testing.T) {
+	ctx := context.Background()
+	_, database := newTestService(t)
+	svc := tasks.NewService(failingLabels{database})
+	blocked := create(t, tasks.NewService(database), "p", model.ItemTypeTask, model.StatusOpen, "blocked")
+
+	_, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "new", Status: model.StatusOpen},
+		tasks.ItemLinks{Blocks: []string{blocked.ID}, Labels: []string{"bug"}})
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("CreateItem err = %v, want the label failure", err)
+	}
+	g := graph(t, svc)
+	if items := g.List(tasks.ListFilter{Project: "p"}); len(items) != 1 || items[0].ID != blocked.ID {
+		t.Errorf("items after failed create = %v, want only %s", items, blocked.ID)
+	}
+	if deps := g.DepsOf(blocked.ID); len(deps) != 0 {
+		t.Errorf("dependency from failed create survived: %v", deps)
 	}
 }

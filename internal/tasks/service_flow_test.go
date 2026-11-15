@@ -17,7 +17,7 @@ func createPri(t *testing.T, svc *tasks.Service, project, title string, status m
 	t.Helper()
 	item, err := svc.CreateItem(context.Background(), model.NewItem{
 		Project: project, Type: model.ItemTypeTask, Title: title, Status: status, Priority: priority,
-	})
+	}, tasks.ItemLinks{})
 	if err != nil {
 		t.Fatalf("create %q: %v", title, err)
 	}

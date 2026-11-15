@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
 )
 
@@ -312,4 +315,55 @@ func toStrings(v any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// Guards: `add` checks --parent before writing, so a bad parent leaves no
+// orphan item behind (its ID would never be printed).
+func TestAdd_InvalidParentCreatesNothing(t *testing.T) {
+	p := newProg(t)
+	notEpic := p.ok("add", "Plain task", "-p", "proj")
+	p.fails("add", "Child", "-p", "proj", "--parent", notEpic, "-l", "bug")
+	if got := ids(p.jsonArray("list", "-p", "proj", "--json")); !slices.Equal(got, []string{notEpic}) {
+		t.Errorf("items after failed add = %v, want only [%s]", got, notEpic)
+	}
+}
+
+// Guards: `add --blocks` with an unknown ID leaves no orphan item behind.
+func TestAdd_MissingBlocksTargetCreatesNothing(t *testing.T) {
+	p := newProg(t)
+	p.fails("add", "Blocker", "-p", "proj", "--blocks", "ts-000000")
+	if got := p.jsonArray("list", "-p", "proj", "--json"); len(got) != 0 {
+		t.Errorf("items after failed add = %v, want none", ids(got))
+	}
+}
+
+// Guards: `delete` is the one change that can't be undone, so it backs up
+// first and the newest backup still contains the deleted item.
+func TestDelete_BacksUpFirst(t *testing.T) {
+	p := newProg(t)
+	id := p.ok("add", "Doomed", "-p", "proj")
+	// `log` takes no backup, so only a backup made by `delete` has this entry.
+	p.ok("log", id, "last words")
+	p.ok("delete", id)
+
+	backups, err := db.ListBackups()
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("ListBackups = %v, %v; want at least one backup", backups, err)
+	}
+	newest, err := db.BackupPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := db.Open(filepath.Join(newest, backups[0].Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	logs, err := snapshot.Logs(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].Message != "last words" {
+		t.Errorf("newest backup %s has logs %v for %s; want the state just before delete", backups[0].Name, logs, id)
+	}
 }

@@ -58,7 +58,7 @@ func (db *DB) Backup() (string, error) {
 // BackupTo writes a consistent snapshot of the database to path using
 // VACUUM INTO. The path is bound as a parameter, so quotes in it are safe.
 func (db *DB) BackupTo(path string) error {
-	if _, err := db.Exec(`VACUUM INTO ?`, path); err != nil {
+	if _, err := db.conn.Exec(`VACUUM INTO ?`, path); err != nil {
 		return fmt.Errorf("failed to create backup at %s: %w", path, err)
 	}
 	return nil

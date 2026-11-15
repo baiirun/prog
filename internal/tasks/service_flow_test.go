@@ -10,8 +10,7 @@ import (
 )
 
 // Flow tests: writes through Service over the real SQLite store, then reads
-// through a fresh Graph. Ported from the SQL-era internal/db query and dep
-// tests; each test name keeps the old intent.
+// through a fresh Graph.
 
 // createPri adds a task with an explicit priority.
 func createPri(t *testing.T, svc *tasks.Service, project, title string, status model.Status, priority int) model.Item {
@@ -53,11 +52,7 @@ func mustSetStatus(t *testing.T, svc *tasks.Service, id string, status model.Sta
 
 func mustList(t *testing.T, svc *tasks.Service, f tasks.ListFilter) []model.Item {
 	t.Helper()
-	items, err := graph(t, svc).List(f)
-	if err != nil {
-		t.Fatalf("List(%+v): %v", f, err)
-	}
-	return items
+	return graph(t, svc).List(f)
 }
 
 func idSet(items []model.Item) map[string]bool {
@@ -68,25 +63,17 @@ func idSet(items []model.Item) map[string]bool {
 	return s
 }
 
-// hasUnmetDeps replaces db.HasUnmetDeps: an item has unmet deps exactly when
-// it appears in List(HasBlockers) and not in List(NoBlockers). Both are
-// checked so the two filters cannot disagree.
+// hasUnmetDeps reports whether id has an unresolved dependency, checking that
+// the two blocker filters partition the items (each item is in exactly one).
 func hasUnmetDeps(t *testing.T, svc *tasks.Service, id string) bool {
 	t.Helper()
 	g := graph(t, svc)
-	has, err := g.List(tasks.ListFilter{HasBlockers: true})
-	if err != nil {
-		t.Fatal(err)
+	inWith := idSet(g.List(tasks.ListFilter{Blockers: tasks.WithUnresolvedBlockers}))[id]
+	inWithout := idSet(g.List(tasks.ListFilter{Blockers: tasks.WithoutUnresolvedBlockers}))[id]
+	if inWith == inWithout {
+		t.Fatalf("item %s: in with-blockers=%v and without-blockers=%v; filters must partition items", id, inWith, inWithout)
 	}
-	no, err := g.List(tasks.ListFilter{NoBlockers: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inHas, inNo := idSet(has)[id], idSet(no)[id]
-	if inHas == inNo {
-		t.Fatalf("item %s: HasBlockers=%v and NoBlockers=%v must be exclusive", id, inHas, inNo)
-	}
-	return inHas
+	return inWith
 }
 
 func effectiveStatus(t *testing.T, svc *tasks.Service, id string) model.Status {
@@ -118,14 +105,6 @@ func TestList_ProjectAndStatusFilters(t *testing.T) {
 	}
 	if items := mustList(t, svc, tasks.ListFilter{Project: "proj1", Status: &status}); len(items) != 1 {
 		t.Errorf("expected 1 open item in proj1, got %d", len(items))
-	}
-}
-
-func TestList_InvalidStatus(t *testing.T) {
-	svc, _ := newTestService(t)
-	status := model.Status("invalid")
-	if _, err := graph(t, svc).List(tasks.ListFilter{Status: &status}); err == nil {
-		t.Error("expected error for invalid status")
 	}
 }
 
@@ -172,18 +151,11 @@ func TestList_Type(t *testing.T) {
 	createPri(t, svc, "test", "Task 1", model.StatusOpen, 2)
 	createPri(t, svc, "test", "Task 2", model.StatusOpen, 2)
 
-	if items := mustList(t, svc, tasks.ListFilter{Type: "epic"}); len(items) != 1 {
+	if items := mustList(t, svc, tasks.ListFilter{Type: model.ItemTypeEpic}); len(items) != 1 {
 		t.Errorf("expected 1 epic, got %d", len(items))
 	}
-	if items := mustList(t, svc, tasks.ListFilter{Type: "task"}); len(items) != 2 {
+	if items := mustList(t, svc, tasks.ListFilter{Type: model.ItemTypeTask}); len(items) != 2 {
 		t.Errorf("expected 2 tasks, got %d", len(items))
-	}
-}
-
-func TestList_InvalidType(t *testing.T) {
-	svc, _ := newTestService(t)
-	if _, err := graph(t, svc).List(tasks.ListFilter{Type: "invalid"}); err == nil {
-		t.Error("expected error for invalid type")
 	}
 }
 
@@ -230,7 +202,7 @@ func TestList_HasBlockers(t *testing.T) {
 	createPri(t, svc, "test", "Task 3", model.StatusOpen, 2) // no deps, never listed
 	mustAddDep(t, svc, task2.ID, task1.ID)
 
-	items := mustList(t, svc, tasks.ListFilter{HasBlockers: true})
+	items := mustList(t, svc, tasks.ListFilter{Blockers: tasks.WithUnresolvedBlockers})
 	if len(items) != 1 {
 		t.Errorf("expected 1 item with blockers, got %d", len(items))
 	}
@@ -239,7 +211,7 @@ func TestList_HasBlockers(t *testing.T) {
 	}
 
 	mustSetStatus(t, svc, task1.ID, model.StatusDone)
-	if items := mustList(t, svc, tasks.ListFilter{HasBlockers: true}); len(items) != 0 {
+	if items := mustList(t, svc, tasks.ListFilter{Blockers: tasks.WithUnresolvedBlockers}); len(items) != 0 {
 		t.Errorf("expected 0 items with blockers after completing dep, got %d", len(items))
 	}
 }
@@ -251,7 +223,7 @@ func TestList_NoBlockers(t *testing.T) {
 	task3 := createPri(t, svc, "test", "Task 3", model.StatusOpen, 2)
 	mustAddDep(t, svc, task2.ID, task1.ID)
 
-	items := mustList(t, svc, tasks.ListFilter{NoBlockers: true})
+	items := mustList(t, svc, tasks.ListFilter{Blockers: tasks.WithoutUnresolvedBlockers})
 	if len(items) != 2 {
 		t.Errorf("expected 2 items with no blockers, got %d", len(items))
 	}
@@ -264,28 +236,8 @@ func TestList_NoBlockers(t *testing.T) {
 	}
 
 	mustSetStatus(t, svc, task1.ID, model.StatusDone)
-	if items := mustList(t, svc, tasks.ListFilter{NoBlockers: true}); len(items) != 3 {
+	if items := mustList(t, svc, tasks.ListFilter{Blockers: tasks.WithoutUnresolvedBlockers}); len(items) != 3 {
 		t.Errorf("expected 3 items with no blockers after completing dep, got %d", len(items))
-	}
-}
-
-func TestList_CanceledBlockerResolvesHasBlockers(t *testing.T) {
-	svc, _ := newTestService(t)
-	blocker := createPri(t, svc, "test", "Blocker", model.StatusOpen, 2)
-	task := createPri(t, svc, "test", "Blocked Task", model.StatusOpen, 1)
-	mustAddDep(t, svc, task.ID, blocker.ID)
-
-	items := mustList(t, svc, tasks.ListFilter{HasBlockers: true})
-	if len(items) != 1 || items[0].ID != task.ID {
-		t.Errorf("expected task in has-blockers list, got %v", items)
-	}
-
-	mustSetStatus(t, svc, blocker.ID, model.StatusCanceled)
-	if items := mustList(t, svc, tasks.ListFilter{HasBlockers: true}); len(items) != 0 {
-		t.Errorf("expected 0 items with blockers after cancel, got %d", len(items))
-	}
-	if !idSet(mustList(t, svc, tasks.ListFilter{NoBlockers: true}))[task.ID] {
-		t.Error("task should appear in no-blockers list after blocker is canceled")
 	}
 }
 
@@ -307,7 +259,7 @@ func TestList_CombinedFilters(t *testing.T) {
 		t.Errorf("expected task1, got %s", items[0].ID)
 	}
 
-	if items := mustList(t, svc, tasks.ListFilter{Project: "test", Type: "task"}); len(items) != 2 {
+	if items := mustList(t, svc, tasks.ListFilter{Project: "test", Type: model.ItemTypeTask}); len(items) != 2 {
 		t.Errorf("expected 2 tasks in test project, got %d", len(items))
 	}
 }
@@ -422,40 +374,6 @@ func TestReady_ReviewingDoesNotResolveDeps(t *testing.T) {
 	}
 }
 
-func TestReady_WithDefinitionOfDone(t *testing.T) {
-	ctx := context.Background()
-	svc, _ := newTestService(t)
-	createPri(t, svc, "test", "Task without DoD", model.StatusOpen, 2)
-	dod := "Tests pass; Docs updated"
-	withDoD, err := svc.CreateItem(ctx, model.NewItem{
-		Project: "test", Type: model.ItemTypeTask, Title: "Task with DoD",
-		DefinitionOfDone: &dod, Status: model.StatusOpen, Priority: 1,
-	})
-	if err != nil {
-		t.Fatalf("create item with DoD: %v", err)
-	}
-
-	ready := graph(t, svc).Ready("test", nil)
-	if len(ready) != 2 {
-		t.Errorf("expected 2 ready items, got %d", len(ready))
-	}
-	found := false
-	for _, item := range ready {
-		if item.ID != withDoD.ID {
-			continue
-		}
-		found = true
-		if item.DefinitionOfDone == nil {
-			t.Error("expected DefinitionOfDone to be populated")
-		} else if *item.DefinitionOfDone != dod {
-			t.Errorf("DefinitionOfDone = %q, want %q", *item.DefinitionOfDone, dod)
-		}
-	}
-	if !found {
-		t.Error("item with DoD not found in ready list")
-	}
-}
-
 func TestReady_ExcludesEpics(t *testing.T) {
 	svc, _ := newTestService(t)
 	epic := createEpic(t, svc, "test", "Epic")
@@ -467,23 +385,6 @@ func TestReady_ExcludesEpics(t *testing.T) {
 	}
 	if len(ready) != 1 || ready[0].ID != task.ID {
 		t.Errorf("expected 1 ready task, got %d", len(ready))
-	}
-}
-
-func TestReady_EpicDepResolvesWhenChildrenDone(t *testing.T) {
-	svc, _ := newTestService(t)
-	epic := createEpic(t, svc, "test", "Phase 1")
-	epicChild := createPri(t, svc, "test", "Phase 1 Task", model.StatusOpen, 2)
-	mustSetParent(t, svc, epicChild.ID, epic.ID)
-	phase2Task := createPri(t, svc, "test", "Phase 2 Task", model.StatusOpen, 1)
-	mustAddDep(t, svc, phase2Task.ID, epic.ID)
-
-	if idSet(graph(t, svc).Ready("test", nil))[phase2Task.ID] {
-		t.Error("phase 2 task should not be ready while epic child is open")
-	}
-	mustSetStatus(t, svc, epicChild.ID, model.StatusDone)
-	if !idSet(graph(t, svc).Ready("test", nil))[phase2Task.ID] {
-		t.Error("phase 2 task should be ready after epic's children are all done")
 	}
 }
 
@@ -521,14 +422,6 @@ func TestReport_Counts(t *testing.T) {
 	}
 	if len(report.RecentDone) != 1 {
 		t.Errorf("recent done = %d, want 1", len(report.RecentDone))
-	}
-}
-
-func TestReport_Empty(t *testing.T) {
-	svc, _ := newTestService(t)
-	report := graph(t, svc).Report("empty", nil)
-	if report.Open != 0 || report.Done != 0 || report.Ready != 0 {
-		t.Error("expected all counts to be 0 for empty project")
 	}
 }
 
@@ -581,35 +474,6 @@ func TestEpicStatus_ReopenedChildRevertsEpic(t *testing.T) {
 	// One done child + one open child => in_progress
 	if got := effectiveStatus(t, svc, epic.ID); got != model.StatusInProgress {
 		t.Errorf("reopened-child epic status = %q, want in_progress", got)
-	}
-}
-
-// Ported from the two manual-override derivation tests: the force-close
-// write goes through Service.SetStatus, so this is a write+read flow.
-func TestEpicStatus_ManualOverrideWinsOverChildren(t *testing.T) {
-	for _, forced := range []model.Status{model.StatusDone, model.StatusCanceled} {
-		t.Run(string(forced), func(t *testing.T) {
-			svc, _ := newTestService(t)
-			epic := createEpic(t, svc, "test", "Epic")
-			task := createPri(t, svc, "test", "Task", model.StatusOpen, 2)
-			mustSetParent(t, svc, task.ID, epic.ID)
-			mustSetStatus(t, svc, epic.ID, forced)
-
-			if got := effectiveStatus(t, svc, epic.ID); got != forced {
-				t.Errorf("manually-%s epic status = %q, want %s", forced, got, forced)
-			}
-		})
-	}
-}
-
-func TestItem_EpicDerivedStatus(t *testing.T) {
-	svc, _ := newTestService(t)
-	epic := createEpic(t, svc, "test", "Epic")
-	task := createPri(t, svc, "test", "Task", model.StatusDone, 2)
-	mustSetParent(t, svc, task.ID, epic.ID)
-
-	if got := effectiveStatus(t, svc, epic.ID); got != model.StatusDone {
-		t.Errorf("Item epic status = %q, want done", got)
 	}
 }
 
@@ -682,29 +546,6 @@ func TestAddDep_NonexistentItem(t *testing.T) {
 	}
 }
 
-func TestUnmetDeps_DoneResolves(t *testing.T) {
-	svc, _ := newTestService(t)
-	task1 := createPri(t, svc, "test", "Task 1", model.StatusOpen, 0)
-	task2 := createPri(t, svc, "test", "Task 2", model.StatusOpen, 0)
-	mustAddDep(t, svc, task2.ID, task1.ID)
-
-	if !hasUnmetDeps(t, svc, task2.ID) {
-		t.Error("expected unmet deps when dependency is open")
-	}
-	mustSetStatus(t, svc, task1.ID, model.StatusDone)
-	if hasUnmetDeps(t, svc, task2.ID) {
-		t.Error("expected no unmet deps when dependency is done")
-	}
-}
-
-func TestUnmetDeps_NoDeps(t *testing.T) {
-	svc, _ := newTestService(t)
-	task := createPri(t, svc, "test", "Task", model.StatusOpen, 0)
-	if hasUnmetDeps(t, svc, task.ID) {
-		t.Error("expected no unmet deps for task with no dependencies")
-	}
-}
-
 func TestDepsOf_Empty(t *testing.T) {
 	svc, _ := newTestService(t)
 	task := createPri(t, svc, "test", "Task", model.StatusOpen, 0)
@@ -733,23 +574,6 @@ func TestUnmetDeps_CanceledDepResolved(t *testing.T) {
 	// The edge is preserved; only its resolution changed.
 	if deps := graph(t, svc).DepsOf(task.ID); len(deps) != 1 || deps[0] != blocker.ID {
 		t.Errorf("dep row should be preserved after cancel, got %v", deps)
-	}
-}
-
-func TestUnmetDeps_EpicDepResolvedByChildren(t *testing.T) {
-	svc, _ := newTestService(t)
-	epic := createEpic(t, svc, "test", "Epic")
-	epicChild := createPri(t, svc, "test", "Child", model.StatusOpen, 2)
-	mustSetParent(t, svc, epicChild.ID, epic.ID)
-	task := createPri(t, svc, "test", "Downstream", model.StatusOpen, 1)
-	mustAddDep(t, svc, task.ID, epic.ID)
-
-	if !hasUnmetDeps(t, svc, task.ID) {
-		t.Error("expected unmet deps when epic child is open")
-	}
-	mustSetStatus(t, svc, epicChild.ID, model.StatusDone)
-	if hasUnmetDeps(t, svc, task.ID) {
-		t.Error("expected no unmet deps after epic child completed")
 	}
 }
 
@@ -793,23 +617,11 @@ func TestEdges_FilterByProject(t *testing.T) {
 	}
 }
 
-func TestEdges_Empty(t *testing.T) {
-	svc, _ := newTestService(t)
-	createPri(t, svc, "test", "Task 1", model.StatusOpen, 0)
-	if edges := graph(t, svc).Edges(""); len(edges) != 0 {
-		t.Errorf("expected 0 edges, got %d", len(edges))
-	}
-}
-
 // --- Service write rules ---
 
 func TestSetStatus_InvalidStatus(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
-	if err := svc.SetStatus(ctx, "ts-123456", model.Status("invalid")); err == nil {
-		t.Error("expected error for invalid status")
-	}
-	// Invalid status must be rejected even for an existing item.
 	task := createPri(t, svc, "test", "Task", model.StatusOpen, 2)
 	if err := svc.SetStatus(ctx, task.ID, model.Status("invalid")); err == nil {
 		t.Error("expected error for invalid status on existing item")

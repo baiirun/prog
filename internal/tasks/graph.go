@@ -23,8 +23,8 @@ type Graph struct {
 
 // NewGraph validates records and derives effective statuses.
 // Ensures: an error for any item whose stored type or status is invalid.
-// Must not: fail on dangling parent or dependency references; they are
-// ignored for derivation and resolution, matching the old SQL JOIN semantics.
+// Must not: fail on dangling parent or dependency references. Legacy data
+// has them; they are ignored for derivation and resolution.
 func NewGraph(items []model.Item, deps []model.Dep) (*Graph, error) {
 	g := &Graph{
 		items:      make(map[string]model.Item, len(items)),
@@ -67,8 +67,8 @@ func NewGraph(items []model.Item, deps []model.Dep) (*Graph, error) {
 }
 
 // deriveEpicStatus is the epic status rule. children holds the stored status
-// of each direct child (nested epics contribute their stored status, not
-// their derived one, matching the old SQL).
+// of each direct child; a nested epic contributes its stored status, not its
+// derived one.
 //
 //   - stored done/canceled wins (manual force-close)
 //   - no children: draft
@@ -77,8 +77,6 @@ func NewGraph(items []model.Item, deps []model.Dep) (*Graph, error) {
 //   - any child in_progress, reviewing or done: in_progress
 //   - every unresolved child draft: draft
 //   - otherwise: open
-//
-// Requires: every status is valid (NewGraph checks); panics otherwise.
 func deriveEpicStatus(stored model.Status, children []model.Status) model.Status {
 	if isTerminal(stored) {
 		return stored
@@ -89,9 +87,6 @@ func deriveEpicStatus(stored model.Status, children []model.Status) model.Status
 
 	count := make(map[model.Status]int, 7)
 	for _, s := range children {
-		if !s.IsValid() {
-			panic(fmt.Sprintf("deriveEpicStatus: invalid child status %q", s))
-		}
 		count[s]++
 	}
 
@@ -120,11 +115,11 @@ func (g *Graph) exists(id string) bool {
 }
 
 // Item returns one item with its effective status.
-// Ensures: a "not found" error that names the ID when it does not exist.
+// Ensures: a *NotFoundError when it does not exist.
 func (g *Graph) Item(id string) (model.Item, error) {
 	item, ok := g.items[id]
 	if !ok {
-		return model.Item{}, fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+		return model.Item{}, &NotFoundError{Record: RecordItem, ID: id}
 	}
 	return item, nil
 }
@@ -148,28 +143,31 @@ func (g *Graph) hasUnresolvedDep(id string) bool {
 	return false
 }
 
-// ListFilter selects items for List. Zero values mean "no filter".
+// BlockerFilter selects items by whether they have an unresolved dependency.
+type BlockerFilter int
+
+const (
+	AnyBlockers BlockerFilter = iota
+	WithUnresolvedBlockers
+	WithoutUnresolvedBlockers
+)
+
+// ListFilter selects items for List. Zero values mean "no filter". Values
+// are parsed at the CLI boundary; a Status or Type no item can have simply
+// matches nothing.
 type ListFilter struct {
-	Project     string
-	Status      *model.Status // matched against effective status
-	Parent      string        // parent epic ID
-	Type        string        // "task" or "epic"
-	Blocking    string        // items that this ID depends on
-	BlockedBy   string        // items that depend on this ID
-	HasBlockers bool          // items with at least one unresolved dependency
-	NoBlockers  bool          // items with no unresolved dependency
-	Labels      []string      // items carrying all of these labels
+	Project   string
+	Status    *model.Status  // matched against effective status
+	Parent    string         // parent epic ID
+	Type      model.ItemType // "" means any
+	Blocking  string         // items that this ID depends on
+	BlockedBy string         // items that depend on this ID
+	Blockers  BlockerFilter
+	Labels    []string // items carrying all of these labels
 }
 
 // List returns matching items ordered by priority, then CreatedAt, then ID.
-// Ensures: an error for an invalid Status or Type in the filter.
-func (g *Graph) List(f ListFilter) ([]model.Item, error) {
-	if f.Status != nil && !f.Status.IsValid() {
-		return nil, fmt.Errorf("invalid status: %s", *f.Status)
-	}
-	if f.Type != "" && !model.ItemType(f.Type).IsValid() {
-		return nil, fmt.Errorf("invalid type: %s (valid: task, epic)", f.Type)
-	}
+func (g *Graph) List(f ListFilter) []model.Item {
 
 	var blocking, blockedBy map[string]bool
 	if f.Blocking != "" {
@@ -184,16 +182,16 @@ func (g *Graph) List(f ListFilter) ([]model.Item, error) {
 		case f.Project != "" && item.Project != f.Project,
 			f.Status != nil && item.Status != *f.Status,
 			f.Parent != "" && (item.ParentID == nil || *item.ParentID != f.Parent),
-			f.Type != "" && string(item.Type) != f.Type,
+			f.Type != "" && item.Type != f.Type,
 			blocking != nil && !blocking[item.ID],
 			blockedBy != nil && !blockedBy[item.ID],
-			f.HasBlockers && !g.hasUnresolvedDep(item.ID),
-			f.NoBlockers && g.hasUnresolvedDep(item.ID),
+			f.Blockers == WithUnresolvedBlockers && !g.hasUnresolvedDep(item.ID),
+			f.Blockers == WithoutUnresolvedBlockers && g.hasUnresolvedDep(item.ID),
 			!hasAllLabels(item, f.Labels):
 			return false
 		}
 		return true
-	}), nil
+	})
 }
 
 // Ready returns open tasks (never epics) with no unresolved dependency,
@@ -270,9 +268,7 @@ const recentDoneLimit = 3
 func (g *Graph) Report(project string, labels []string) StatusReport {
 	report := StatusReport{Project: project}
 	var done []model.Item
-	// The filter is always valid, so List cannot fail.
-	items, _ := g.List(ListFilter{Project: project, Labels: labels})
-	for _, item := range items {
+	for _, item := range g.List(ListFilter{Project: project, Labels: labels}) {
 		switch item.Status {
 		case model.StatusDraft:
 			report.Draft++
@@ -294,7 +290,9 @@ func (g *Graph) Report(project string, labels []string) StatusReport {
 		case model.StatusCanceled:
 			report.Canceled++
 		default:
-			panic(fmt.Sprintf("Report: item %s has invalid status %q after NewGraph", item.ID, item.Status))
+			// Go switches are not exhaustive: this catches a Status added to
+			// model without a bucket here. NewGraph rejects invalid values.
+			panic(fmt.Sprintf("Report: no bucket for status %q (item %s)", item.Status, item.ID))
 		}
 	}
 

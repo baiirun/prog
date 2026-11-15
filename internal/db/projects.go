@@ -9,7 +9,7 @@ import (
 // EnsureProject creates the project if missing. Idempotent.
 func (db *DB) EnsureProject(ctx context.Context, name string) error {
 	now := time.Now()
-	_, err := db.ExecContext(ctx, `
+	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO projects (name, created_at, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(name) DO NOTHING`,
@@ -23,7 +23,7 @@ func (db *DB) EnsureProject(ctx context.Context, name string) error {
 
 // ListProjects returns project names sorted by name.
 func (db *DB) ListProjects(ctx context.Context) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT name FROM projects ORDER BY name`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT name FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query projects: %w", err)
 	}

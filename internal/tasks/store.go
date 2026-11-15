@@ -18,11 +18,11 @@ import (
 )
 
 // Store persists prog's records. It holds no domain rules: implementations
-// store what they are given and report missing records. Service is the only
-// consumer.
+// store what they are given and return *NotFoundError for any missing item or
+// label. Service is the only consumer.
 type Store interface {
 	// LoadGraph returns every item, with stored (not derived) status and
-	// Labels populated, and every dependency edge in insertion order,
+	// Labels populated and sorted by name, and every dependency edge,
 	// including edges whose target no longer exists.
 	LoadGraph(ctx context.Context) ([]model.Item, []model.Dep, error)
 

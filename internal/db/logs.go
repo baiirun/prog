@@ -9,7 +9,7 @@ import (
 
 // AddLog adds a log entry to an item.
 func (db *DB) AddLog(ctx context.Context, itemID, message string) error {
-	_, err := db.ExecContext(ctx, `INSERT INTO logs (item_id, message) VALUES (?, ?)`, itemID, message)
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO logs (item_id, message) VALUES (?, ?)`, itemID, message)
 	if err != nil {
 		return fmt.Errorf("failed to add log to %s: %w", itemID, err)
 	}
@@ -18,7 +18,7 @@ func (db *DB) AddLog(ctx context.Context, itemID, message string) error {
 
 // Logs returns an item's logs, oldest first.
 func (db *DB) Logs(ctx context.Context, itemID string) ([]model.Log, error) {
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.conn.QueryContext(ctx, `
 		SELECT id, item_id, message, created_at
 		FROM logs WHERE item_id = ? ORDER BY created_at ASC, id ASC`, itemID)
 	if err != nil {

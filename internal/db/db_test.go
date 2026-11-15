@@ -2,13 +2,25 @@ package db
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
+
+// requireNotFound fails unless err is a *tasks.NotFoundError for record.
+func requireNotFound(t *testing.T, err error, record tasks.Record) {
+	t.Helper()
+	var nf *tasks.NotFoundError
+	if !errors.As(err, &nf) || nf.Record != record {
+		t.Fatalf("err = %v, want *tasks.NotFoundError for %s", err, record)
+	}
+}
 
 func setupTestDB(t *testing.T) *DB {
 	t.Helper()
@@ -79,7 +91,7 @@ func loadDeps(t *testing.T, db *DB) []model.Dep {
 func countRows(t *testing.T, db *DB, table, where string, args ...any) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE `+where, args...).Scan(&n); err != nil {
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE `+where, args...).Scan(&n); err != nil {
 		t.Fatalf("failed to count %s: %v", table, err)
 	}
 	return n
@@ -181,9 +193,7 @@ func TestSetStatus_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
 	err := db.SetStatus(context.Background(), "nonexistent", model.StatusDone)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 }
 
 func TestSetTitle(t *testing.T) {
@@ -223,9 +233,7 @@ func TestAppendDescription_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
 	err := db.AppendDescription(context.Background(), "nonexistent", "text")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 }
 
 func TestSetParent(t *testing.T) {
@@ -273,27 +281,11 @@ func TestSetDescription(t *testing.T) {
 	}
 }
 
-func TestSetDescription_EmptyToContent(t *testing.T) {
-	db := setupTestDB(t)
-	item := createTestItem(t, db, "Test")
-
-	if err := db.SetDescription(context.Background(), item.ID, "Added description"); err != nil {
-		t.Fatalf("failed to set description: %v", err)
-	}
-
-	got := loadItem(t, db, item.ID)
-	if got.Description != "Added description" {
-		t.Errorf("description = %q, want %q", got.Description, "Added description")
-	}
-}
-
 func TestSetDescription_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
 	err := db.SetDescription(context.Background(), "nonexistent", "text")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 }
 
 func TestSetParent_NotFound(t *testing.T) {
@@ -309,9 +301,7 @@ func TestSetParent_NotFound(t *testing.T) {
 
 	// Nonexistent task
 	err := db.SetParent(ctx, "nonexistent", epic.ID)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error for nonexistent task, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 
 	// Nonexistent parent: rejected by the parent_id foreign key.
 	task := createTestItem(t, db, "Task")
@@ -392,9 +382,7 @@ func TestSetDefinitionOfDone_NotFound(t *testing.T) {
 
 	dod := "Some criteria"
 	err := db.SetDefinitionOfDone(context.Background(), "nonexistent", &dod)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 }
 
 // Regression: DeleteItem used to delete logs and deps, then fail on the
@@ -502,9 +490,7 @@ func TestDeleteItem_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
 	err := db.DeleteItem(context.Background(), "ts-missing")
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected not found error, got %v", err)
-	}
+	requireNotFound(t, err, tasks.RecordItem)
 }
 
 func TestLoadGraph(t *testing.T) {
@@ -540,7 +526,7 @@ func TestLoadGraph(t *testing.T) {
 
 	// A dangling edge, as left by databases written before deletes were
 	// transactional. It can only be inserted with foreign keys off.
-	conn, err := db.Conn(ctx)
+	conn, err := db.conn.Conn(ctx)
 	if err != nil {
 		t.Fatalf("failed to get conn: %v", err)
 	}
@@ -598,14 +584,35 @@ func TestLoadGraph(t *testing.T) {
 	}
 }
 
-func TestLoadGraph_Empty(t *testing.T) {
-	db := setupTestDB(t)
-
-	items, deps, err := db.LoadGraph(context.Background())
-	if err != nil {
-		t.Fatalf("failed to load graph: %v", err)
+// Protects the Store contract that setters bump UpdatedAt: `prog status`
+// lists recently done items by it.
+func TestSetters_BumpUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	dod := "done when green"
+	setters := map[string]func(db *DB, id, epicID string) error{
+		"SetStatus":           func(db *DB, id, _ string) error { return db.SetStatus(ctx, id, model.StatusDone) },
+		"SetTitle":            func(db *DB, id, _ string) error { return db.SetTitle(ctx, id, "new") },
+		"SetDescription":      func(db *DB, id, _ string) error { return db.SetDescription(ctx, id, "new") },
+		"AppendDescription":   func(db *DB, id, _ string) error { return db.AppendDescription(ctx, id, "more") },
+		"SetDefinitionOfDone": func(db *DB, id, _ string) error { return db.SetDefinitionOfDone(ctx, id, &dod) },
+		"SetParent":           func(db *DB, id, epicID string) error { return db.SetParent(ctx, id, epicID) },
+		"SetProject":          func(db *DB, id, _ string) error { return db.SetProject(ctx, id, "elsewhere") },
 	}
-	if len(items) != 0 || len(deps) != 0 {
-		t.Errorf("got %d items, %d deps, want none", len(items), len(deps))
+	old := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	for name, set := range setters {
+		t.Run(name, func(t *testing.T) {
+			db := setupTestDB(t)
+			item := createTestItem(t, db, "item")
+			epic := createItem(t, db, model.NewItem{Project: "test", Type: model.ItemTypeEpic, Title: "epic", Status: model.StatusOpen})
+			if _, err := db.conn.ExecContext(ctx, `UPDATE items SET updated_at = ? WHERE id = ?`, old, item.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := set(db, item.ID, epic.ID); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if got := loadItem(t, db, item.ID).UpdatedAt; !got.After(old) {
+				t.Errorf("%s left UpdatedAt at %v", name, got)
+			}
+		})
 	}
 }

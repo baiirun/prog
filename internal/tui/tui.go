@@ -211,8 +211,7 @@ func (m Model) loadItems() tea.Cmd {
 		if err != nil {
 			return itemsMsg{err: err}
 		}
-		items, err := g.List(tasks.ListFilter{})
-		return itemsMsg{items: items, err: err}
+		return itemsMsg{items: g.List(tasks.ListFilter{})}
 	}
 }
 

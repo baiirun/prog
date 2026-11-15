@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 // CreateItem stores a new item and returns it with its assigned ID.
@@ -25,7 +26,7 @@ func (db *DB) CreateItem(ctx context.Context, in model.NewItem) (model.Item, err
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	_, err := db.ExecContext(ctx, `
+	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO items (id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description, item.DefinitionOfDone,
@@ -39,39 +40,51 @@ func (db *DB) CreateItem(ctx context.Context, in model.NewItem) (model.Item, err
 
 // SetStatus changes an item's stored status.
 func (db *DB) SetStatus(ctx context.Context, id string, status model.Status) error {
-	return db.updateItem(ctx, id, "status", status)
+	return db.updateItem(ctx, id, columnStatus, status)
 }
 
 // SetTitle replaces an item's title.
 func (db *DB) SetTitle(ctx context.Context, id, title string) error {
-	return db.updateItem(ctx, id, "title", title)
+	return db.updateItem(ctx, id, columnTitle, title)
 }
 
 // SetDescription replaces an item's description.
 func (db *DB) SetDescription(ctx context.Context, id, text string) error {
-	return db.updateItem(ctx, id, "description", text)
+	return db.updateItem(ctx, id, columnDescription, text)
 }
 
 // SetDefinitionOfDone sets the DoD; nil clears it.
 func (db *DB) SetDefinitionOfDone(ctx context.Context, id string, dod *string) error {
-	return db.updateItem(ctx, id, "definition_of_done", dod)
+	return db.updateItem(ctx, id, columnDefinitionOfDone, dod)
 }
 
 // SetParent sets an item's parent.
 func (db *DB) SetParent(ctx context.Context, id, parentID string) error {
-	return db.updateItem(ctx, id, "parent_id", parentID)
+	return db.updateItem(ctx, id, columnParentID, parentID)
 }
 
 // SetProject moves an item. Requires: the project exists (see EnsureProject).
 func (db *DB) SetProject(ctx context.Context, id, project string) error {
-	return db.updateItem(ctx, id, "project", project)
+	return db.updateItem(ctx, id, columnProject, project)
 }
 
-// updateItem sets one column and bumps updated_at. column is always a
-// constant from this file, never caller input.
-func (db *DB) updateItem(ctx context.Context, id, column string, value any) error {
-	result, err := db.ExecContext(ctx,
-		`UPDATE items SET `+column+` = ?, updated_at = ? WHERE id = ?`,
+// itemColumn is a settable items column. It is spliced into SQL, so only the
+// constants below may exist; a runtime string needs an explicit conversion.
+type itemColumn string
+
+const (
+	columnStatus           itemColumn = "status"
+	columnTitle            itemColumn = "title"
+	columnDescription      itemColumn = "description"
+	columnDefinitionOfDone itemColumn = "definition_of_done"
+	columnParentID         itemColumn = "parent_id"
+	columnProject          itemColumn = "project"
+)
+
+// updateItem sets one column and bumps updated_at.
+func (db *DB) updateItem(ctx context.Context, id string, column itemColumn, value any) error {
+	result, err := db.conn.ExecContext(ctx,
+		`UPDATE items SET `+string(column)+` = ?, updated_at = ? WHERE id = ?`,
 		value, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to set %s for %s: %w", column, id, err)
@@ -82,7 +95,7 @@ func (db *DB) updateItem(ctx context.Context, id, column string, value any) erro
 // AppendDescription appends "\n\n"+text in a single UPDATE, so concurrent
 // appends to the same item do not overwrite each other.
 func (db *DB) AppendDescription(ctx context.Context, id, text string) error {
-	result, err := db.ExecContext(ctx, `
+	result, err := db.conn.ExecContext(ctx, `
 		UPDATE items
 		SET description = COALESCE(description, '') || char(10) || char(10) || ?,
 		    updated_at = ?
@@ -98,7 +111,7 @@ func (db *DB) AppendDescription(ctx context.Context, id, text string) error {
 // one transaction. It refuses an epic that still has children, because their
 // parent_id would dangle.
 func (db *DB) DeleteItem(ctx context.Context, id string) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin delete of %s: %w", id, err)
 	}
@@ -140,7 +153,7 @@ func requireRow(result sql.Result, id string) error {
 		return fmt.Errorf("failed to check update of %s: %w", id, err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("item not found: %s (use 'prog list' to see available items)", id)
+		return &tasks.NotFoundError{Record: tasks.RecordItem, ID: id}
 	}
 	return nil
 }

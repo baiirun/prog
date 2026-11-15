@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 // CreateLabel fails if the name already exists in the project.
@@ -19,7 +20,7 @@ func (db *DB) CreateLabel(ctx context.Context, in model.NewLabel) error {
 func (db *DB) insertLabel(ctx context.Context, in model.NewLabel) (string, error) {
 	id := model.GenerateLabelID()
 	now := time.Now()
-	_, err := db.ExecContext(ctx, `
+	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO labels (id, name, project, color, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		id, in.Name, in.Project, in.Color, now, now)
@@ -32,7 +33,7 @@ func (db *DB) insertLabel(ctx context.Context, in model.NewLabel) (string, error
 // findLabelID returns the ID of a label by project and name, and whether it exists.
 func (db *DB) findLabelID(ctx context.Context, project, name string) (string, bool, error) {
 	var id string
-	err := db.QueryRowContext(ctx, `SELECT id FROM labels WHERE name = ? AND project = ?`, name, project).Scan(&id)
+	err := db.conn.QueryRowContext(ctx, `SELECT id FROM labels WHERE name = ? AND project = ?`, name, project).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -44,7 +45,7 @@ func (db *DB) findLabelID(ctx context.Context, project, name string) (string, bo
 
 // ListLabels returns a project's labels sorted by name.
 func (db *DB) ListLabels(ctx context.Context, project string) ([]model.Label, error) {
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.conn.QueryContext(ctx, `
 		SELECT id, name, project, color, created_at, updated_at
 		FROM labels WHERE project = ? ORDER BY name`, project)
 	if err != nil {
@@ -67,7 +68,7 @@ func (db *DB) ListLabels(ctx context.Context, project string) ([]model.Label, er
 
 // RenameLabel changes a label's name.
 func (db *DB) RenameLabel(ctx context.Context, project, oldName, newName string) error {
-	result, err := db.ExecContext(ctx, `
+	result, err := db.conn.ExecContext(ctx, `
 		UPDATE labels SET name = ?, updated_at = ?
 		WHERE name = ? AND project = ?`,
 		newName, time.Now(), oldName, project)
@@ -79,14 +80,14 @@ func (db *DB) RenameLabel(ctx context.Context, project, oldName, newName string)
 		return fmt.Errorf("failed to rename label: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("label not found: %s", oldName)
+		return &tasks.NotFoundError{Record: tasks.RecordLabel, ID: oldName}
 	}
 	return nil
 }
 
 // DeleteLabel removes the label and detaches it from every item.
 func (db *DB) DeleteLabel(ctx context.Context, project, name string) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -95,7 +96,7 @@ func (db *DB) DeleteLabel(ctx context.Context, project, name string) error {
 	var labelID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM labels WHERE name = ? AND project = ?`, name, project).Scan(&labelID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("label not found: %s", name)
+		return &tasks.NotFoundError{Record: tasks.RecordLabel, ID: name}
 	}
 	if err != nil {
 		return fmt.Errorf("failed to look up label %q: %w", name, err)
@@ -123,7 +124,7 @@ func (db *DB) AddLabelToItem(ctx context.Context, itemID, project, name string) 
 			return err
 		}
 	}
-	_, err = db.ExecContext(ctx,
+	_, err = db.conn.ExecContext(ctx,
 		`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`,
 		itemID, labelID)
 	if err != nil {
@@ -139,9 +140,9 @@ func (db *DB) RemoveLabelFromItem(ctx context.Context, itemID, project, name str
 		return err
 	}
 	if !found {
-		return fmt.Errorf("label not found: %s", name)
+		return &tasks.NotFoundError{Record: tasks.RecordLabel, ID: name}
 	}
-	result, err := db.ExecContext(ctx,
+	result, err := db.conn.ExecContext(ctx,
 		`DELETE FROM item_labels WHERE item_id = ? AND label_id = ?`, itemID, labelID)
 	if err != nil {
 		return fmt.Errorf("failed to remove label from item: %w", err)

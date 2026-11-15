@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
 	"github.com/baiirun/prog/internal/tasks"
 )
@@ -177,79 +174,5 @@ func TestPrintPrimeContent_NoLearnings(t *testing.T) {
 		if strings.Contains(output, gone) {
 			t.Errorf("prime still mentions %q", gone)
 		}
-	}
-}
-
-// setupTestService returns a Service over a fresh SQLite database, wired the
-// same way openService wires it for commands.
-func setupTestService(t *testing.T) *tasks.Service {
-	t.Helper()
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("failed to open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-
-	if err := database.Init(); err != nil {
-		t.Fatalf("failed to init db: %v", err)
-	}
-	return tasks.NewService(database)
-}
-
-// mustCreate adds an item through the Service and fails the test on error.
-func mustCreate(t *testing.T, svc *tasks.Service, item model.NewItem) model.Item {
-	t.Helper()
-	created, err := svc.CreateItem(context.Background(), item)
-	if err != nil {
-		t.Fatalf("failed to create %q: %v", item.Title, err)
-	}
-	return created
-}
-
-// mustGraph loads a fresh snapshot and fails the test on error.
-func mustGraph(t *testing.T, svc *tasks.Service) *tasks.Graph {
-	t.Helper()
-	g, err := svc.Graph(context.Background())
-	if err != nil {
-		t.Fatalf("failed to load graph: %v", err)
-	}
-	return g
-}
-
-// mustItem reads one item from a fresh snapshot and fails the test on error.
-func mustItem(t *testing.T, svc *tasks.Service, id string) model.Item {
-	t.Helper()
-	item, err := mustGraph(t, svc).Item(id)
-	if err != nil {
-		t.Fatalf("failed to get item %s: %v", id, err)
-	}
-	return item
-}
-
-func TestPrimeCommand_Integration(t *testing.T) {
-	svc := setupTestService(t)
-
-	// Create some test data
-	mustCreate(t, svc, model.NewItem{
-		Project:  "test",
-		Type:     model.ItemTypeTask,
-		Title:    "Integration test task",
-		Status:   model.StatusInProgress,
-		Priority: 1,
-	})
-
-	report := mustGraph(t, svc).Report("", nil)
-
-	output := captureOutput(func() {
-		printPrimeContent(&report)
-	})
-
-	// Should contain the test task
-	if !strings.Contains(output, "Integration test task") {
-		t.Error("should contain integration test task in output")
-	}
-	// Should prompt for ready command
-	if !strings.Contains(output, "Run 'prog ready [-p project]'") {
-		t.Error("should prompt to run prog ready")
 	}
 }

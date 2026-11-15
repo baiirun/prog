@@ -8,9 +8,7 @@ import (
 	"github.com/baiirun/prog/internal/model"
 )
 
-// LoadGraph returns every item, with stored (not derived) status and Labels
-// populated, and every dependency edge in insertion order, including edges
-// whose target no longer exists.
+// LoadGraph implements tasks.Store.LoadGraph.
 func (db *DB) LoadGraph(ctx context.Context) ([]model.Item, []model.Dep, error) {
 	items, err := db.loadAllItems(ctx)
 	if err != nil {
@@ -27,7 +25,7 @@ func (db *DB) LoadGraph(ctx context.Context) ([]model.Item, []model.Dep, error) 
 }
 
 func (db *DB) loadAllItems(ctx context.Context) ([]model.Item, error) {
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.conn.QueryContext(ctx, `
 		SELECT id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at
 		FROM items ORDER BY rowid`)
 	if err != nil {
@@ -61,7 +59,7 @@ func (db *DB) loadAllItems(ctx context.Context) ([]model.Item, error) {
 }
 
 func (db *DB) attachLabels(ctx context.Context, items []model.Item) error {
-	rows, err := db.QueryContext(ctx, `
+	rows, err := db.conn.QueryContext(ctx, `
 		SELECT il.item_id, l.name
 		FROM item_labels il JOIN labels l ON il.label_id = l.id
 		ORDER BY il.item_id, l.name`)
@@ -88,7 +86,7 @@ func (db *DB) attachLabels(ctx context.Context, items []model.Item) error {
 }
 
 func (db *DB) loadAllDeps(ctx context.Context) ([]model.Dep, error) {
-	rows, err := db.QueryContext(ctx, `SELECT item_id, depends_on FROM deps ORDER BY rowid`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT item_id, depends_on FROM deps ORDER BY rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load deps: %w", err)
 	}

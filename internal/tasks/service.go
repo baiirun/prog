@@ -73,7 +73,7 @@ func (s *Service) SetParent(ctx context.Context, id, parentID string) error {
 	}
 	parent, err := g.Item(parentID)
 	if err != nil {
-		return fmt.Errorf("parent not found: %s (use 'prog list' to see available items)", parentID)
+		return fmt.Errorf("parent %w", err)
 	}
 	if parent.Type != model.ItemTypeEpic {
 		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
@@ -99,10 +99,10 @@ func (s *Service) AddDep(ctx context.Context, itemID, dependsOnID string) error 
 	if err != nil {
 		return err
 	}
-	_, errItem := g.Item(itemID)
-	_, errDep := g.Item(dependsOnID)
-	if errItem != nil || errDep != nil {
-		return fmt.Errorf("one or both items not found: %s, %s (use 'prog list' to see available items)", itemID, dependsOnID)
+	for _, id := range []string{itemID, dependsOnID} {
+		if _, err := g.Item(id); err != nil {
+			return err
+		}
 	}
 	return s.store.AddDep(ctx, itemID, dependsOnID)
 }

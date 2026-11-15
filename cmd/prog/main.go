@@ -247,42 +247,32 @@ Examples:
   prog list -l bug -l urgent
   prog list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		filter, err := listFlags{
+			project:     flagProject,
+			status:      flagStatus,
+			parent:      flagListParent,
+			itemType:    flagListType,
+			blocking:    flagBlocking,
+			blockedBy:   flagBlockedBy,
+			hasBlockers: flagHasBlockers,
+			noBlockers:  flagNoBlockers,
+			labels:      flagFilterLabels,
+		}.parse()
+		if err != nil {
+			return err
+		}
+
 		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
-		ctx := cmd.Context()
 
-		var status *model.Status
-		if flagStatus != "" {
-			s := model.Status(flagStatus)
-			if !s.IsValid() {
-				return fmt.Errorf("invalid status: %s (valid: draft, open, in_progress, blocked, reviewing, done, canceled)", flagStatus)
-			}
-			status = &s
-		}
-
-		filter := tasks.ListFilter{
-			Project:     flagProject,
-			Status:      status,
-			Parent:      flagListParent,
-			Type:        flagListType,
-			Blocking:    flagBlocking,
-			BlockedBy:   flagBlockedBy,
-			HasBlockers: flagHasBlockers,
-			NoBlockers:  flagNoBlockers,
-			Labels:      flagFilterLabels,
-		}
-
-		g, err := svc.Graph(ctx)
+		g, err := svc.Graph(cmd.Context())
 		if err != nil {
 			return err
 		}
-		items, err := g.List(filter)
-		if err != nil {
-			return err
-		}
+		items := g.List(filter)
 
 		if flagJSON {
 			if len(items) == 0 {
@@ -323,6 +313,46 @@ Examples:
 		printItemsTable(items)
 		return nil
 	},
+}
+
+// listFlags is the raw `prog list` input; parse turns it into a filter.
+type listFlags struct {
+	project, status, parent, itemType, blocking, blockedBy string
+	hasBlockers, noBlockers                                bool
+	labels                                                 []string
+}
+
+func (f listFlags) parse() (tasks.ListFilter, error) {
+	filter := tasks.ListFilter{
+		Project:   f.project,
+		Parent:    f.parent,
+		Blocking:  f.blocking,
+		BlockedBy: f.blockedBy,
+		Labels:    f.labels,
+	}
+	if f.status != "" {
+		s := model.Status(f.status)
+		if !s.IsValid() {
+			return tasks.ListFilter{}, fmt.Errorf("invalid status: %s (valid: draft, open, in_progress, blocked, reviewing, done, canceled)", f.status)
+		}
+		filter.Status = &s
+	}
+	if f.itemType != "" {
+		t := model.ItemType(f.itemType)
+		if !t.IsValid() {
+			return tasks.ListFilter{}, fmt.Errorf("invalid type: %s (valid: task, epic)", f.itemType)
+		}
+		filter.Type = t
+	}
+	switch {
+	case f.hasBlockers && f.noBlockers:
+		return tasks.ListFilter{}, fmt.Errorf("--has-blockers and --no-blockers are mutually exclusive")
+	case f.hasBlockers:
+		filter.Blockers = tasks.WithUnresolvedBlockers
+	case f.noBlockers:
+		filter.Blockers = tasks.WithoutUnresolvedBlockers
+	}
+	return filter, nil
 }
 
 var readyCmd = &cobra.Command{

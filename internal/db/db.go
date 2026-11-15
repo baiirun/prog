@@ -170,9 +170,15 @@ DELETE FROM projects WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13));
 `,
 }
 
-// DB wraps a SQL database connection with task-specific operations.
+// DB is the SQLite implementation of tasks.Store. The connection is private
+// so callers go through Store methods instead of writing SQL against it.
 type DB struct {
-	*sql.DB
+	conn *sql.DB
+}
+
+// Close closes the underlying connection pool.
+func (db *DB) Close() error {
+	return db.conn.Close()
 }
 
 // DefaultPath returns the default database path (~/.prog/prog.db)
@@ -196,14 +202,14 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Enable foreign keys
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
@@ -212,24 +218,24 @@ func Open(path string) (*DB, error) {
 	// connection will get an immediate SQLITE_BUSY (error 261) instead of
 	// waiting. This was causing "database is locked" errors when the
 	// aetherflow daemon's poller and status handler hit prog concurrently.
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		_ = db.Close()
+	if _, err := conn.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
 	// Enable WAL mode for better concurrency (allows concurrent readers during writes)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
+	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = conn.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
-	return &DB{db}, nil
+	return &DB{conn: conn}, nil
 }
 
 // Init creates the schema for a fresh database.
 // For existing databases, use Migrate() instead.
 func (db *DB) Init() error {
-	_, err := db.Exec(baseSchema)
+	_, err := db.conn.Exec(baseSchema)
 	if err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
@@ -276,7 +282,7 @@ func (db *DB) Migrate() error {
 			continue
 		}
 
-		if _, err := db.Exec(migration); err != nil {
+		if _, err := db.conn.Exec(migration); err != nil {
 			return fmt.Errorf("migration to v%d failed: %w", targetVersion, err)
 		}
 
@@ -292,20 +298,20 @@ func (db *DB) Migrate() error {
 // getSchemaVersion returns the current schema version using PRAGMA user_version.
 func (db *DB) getSchemaVersion() (int, error) {
 	var version int
-	err := db.QueryRow("PRAGMA user_version").Scan(&version)
+	err := db.conn.QueryRow("PRAGMA user_version").Scan(&version)
 	return version, err
 }
 
 // setSchemaVersion sets the schema version using PRAGMA user_version.
 func (db *DB) setSchemaVersion(version int) error {
-	_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	_, err := db.conn.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
 
 // tableExists checks if a table exists in the database.
 func (db *DB) tableExists(name string) (bool, error) {
 	var count int
-	err := db.QueryRow(
+	err := db.conn.QueryRow(
 		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
 		name,
 	).Scan(&count)
@@ -314,7 +320,7 @@ func (db *DB) tableExists(name string) (bool, error) {
 
 // migrateProjects populates the projects table from existing items.
 func (db *DB) migrateProjects() error {
-	_, err := db.Exec(`
+	_, err := db.conn.Exec(`
 		INSERT OR IGNORE INTO projects (name, created_at, updated_at)
 		SELECT DISTINCT project, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 		FROM items

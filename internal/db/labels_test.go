@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 func createLabel(t *testing.T, db *DB, in model.NewLabel) {
@@ -118,9 +119,7 @@ func TestRenameLabel(t *testing.T) {
 func TestRenameLabel_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
-	if err := db.RenameLabel(context.Background(), "test", "missing", "new"); err == nil {
-		t.Error("expected error renaming nonexistent label")
-	}
+	requireNotFound(t, db.RenameLabel(context.Background(), "test", "missing", "new"), tasks.RecordLabel)
 }
 
 func TestDeleteLabel(t *testing.T) {
@@ -148,9 +147,7 @@ func TestDeleteLabel(t *testing.T) {
 func TestDeleteLabel_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 
-	if err := db.DeleteLabel(context.Background(), "test", "missing"); err == nil {
-		t.Error("expected error deleting nonexistent label")
-	}
+	requireNotFound(t, db.DeleteLabel(context.Background(), "test", "missing"), tasks.RecordLabel)
 }
 
 func TestAddLabelToItem(t *testing.T) {

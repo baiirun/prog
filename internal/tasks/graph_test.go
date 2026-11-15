@@ -9,8 +9,7 @@ import (
 	"github.com/baiirun/prog/internal/model"
 )
 
-// Protects the epic rule itself. Replaces the 15 TestDeriveEpicStatus_* SQLite
-// tests in internal/db with one table over the pure function.
+// Protects the epic rule itself.
 func TestDeriveEpicStatus(t *testing.T) {
 	const (
 		draft = model.StatusDraft
@@ -107,8 +106,8 @@ func TestGraph_CrossProjectChildAndBlocker(t *testing.T) {
 	}
 }
 
-// Protects JOIN parity: an edge to a deleted item never blocks, but DepsOf
-// still reports it.
+// Protects the dangling-edge rule: an edge to a deleted item never blocks,
+// but DepsOf still reports it.
 func TestGraph_DanglingDepDoesNotBlock(t *testing.T) {
 	g := mustGraph(t, []model.Item{item("ts-a", "p", task, model.StatusOpen)},
 		model.Dep{ItemID: "ts-a", DependsOn: "ts-gone"})
@@ -179,7 +178,7 @@ func TestNewGraph_RejectsInvalidStoredStatus(t *testing.T) {
 }
 
 // Protects `prog graph` output order: deps under one item are listed by ID,
-// as the old SQL did, not in insertion order.
+// so output does not depend on insertion order.
 func TestEdges_OrderedByDependentThenDependency(t *testing.T) {
 	g := mustGraph(t, []model.Item{
 		item("ts-b", "p", task, model.StatusOpen),
@@ -198,5 +197,45 @@ func TestEdges_OrderedByDependentThenDependency(t *testing.T) {
 	want := []string{"ts-a>ts-z", "ts-b>ts-y", "ts-b>ts-z"}
 	if !slices.Equal(got, want) {
 		t.Errorf("Edges = %v, want %v", got, want)
+	}
+}
+
+func labels(names ...string) func(*model.Item) { return func(it *model.Item) { it.Labels = names } }
+
+// Protects `-l a -l b` semantics in list, ready and status: an item must carry
+// every requested label, not any of them.
+func TestLabelFilter_RequiresAllLabels(t *testing.T) {
+	g := mustGraph(t, []model.Item{
+		item("ts-both", "p", task, model.StatusOpen, labels("bug", "ui")),
+		item("ts-bug", "p", task, model.StatusOpen, labels("bug")),
+		item("ts-none", "p", task, model.StatusOpen),
+	})
+	want := []string{"ts-both"}
+	if got := ids(g.List(ListFilter{Labels: []string{"bug", "ui"}})); !slices.Equal(got, want) {
+		t.Errorf("List = %v, want %v", got, want)
+	}
+	if got := ids(g.Ready("p", []string{"bug", "ui"})); !slices.Equal(got, want) {
+		t.Errorf("Ready = %v, want %v", got, want)
+	}
+	if r := g.Report("p", []string{"bug", "ui"}); r.Open != 1 || r.Ready != 1 {
+		t.Errorf("Report Open=%d Ready=%d, want 1 and 1", r.Open, r.Ready)
+	}
+}
+
+// Protects which task `prog ready` offers first among equal priorities:
+// oldest CreatedAt, then lowest ID.
+func TestReady_TieBreakByCreatedAtThenID(t *testing.T) {
+	created := func(minutes int) func(*model.Item) {
+		return func(it *model.Item) { it.CreatedAt = time.Unix(0, 0).Add(time.Duration(minutes) * time.Minute) }
+	}
+	g := mustGraph(t, []model.Item{
+		item("ts-c", "p", task, model.StatusOpen, created(1)),
+		item("ts-b", "p", task, model.StatusOpen, created(1)),
+		item("ts-a", "p", task, model.StatusOpen, created(2)),
+		item("ts-urgent", "p", task, model.StatusOpen, created(9), func(it *model.Item) { it.Priority = 1 }),
+	})
+	want := []string{"ts-urgent", "ts-b", "ts-c", "ts-a"}
+	if got := ids(g.Ready("p", nil)); !slices.Equal(got, want) {
+		t.Errorf("Ready = %v, want %v", got, want)
 	}
 }

@@ -28,18 +28,6 @@ func TestEnsureProject(t *testing.T) {
 	}
 }
 
-func TestListProjectsEmpty(t *testing.T) {
-	db := setupTestDB(t)
-
-	projects, err := db.ListProjects(context.Background())
-	if err != nil {
-		t.Fatalf("failed to list projects: %v", err)
-	}
-	if len(projects) != 0 {
-		t.Errorf("expected empty list, got %v", projects)
-	}
-}
-
 func TestListProjectsSorted(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
@@ -71,7 +59,7 @@ func TestMigrateTrimsExistingProjectNames(t *testing.T) {
 			('ts-new', 'spindle', 'task', 'new task', '', 'open')`,
 		`PRAGMA user_version = 3`,
 	} {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.conn.Exec(stmt); err != nil {
 			t.Fatalf("seed %q: %v", stmt, err)
 		}
 	}

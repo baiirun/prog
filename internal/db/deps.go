@@ -7,7 +7,7 @@ import (
 
 // AddDep records that itemID depends on dependsOnID. Idempotent.
 func (db *DB) AddDep(ctx context.Context, itemID, dependsOnID string) error {
-	_, err := db.ExecContext(ctx,
+	_, err := db.conn.ExecContext(ctx,
 		`INSERT OR IGNORE INTO deps (item_id, depends_on) VALUES (?, ?)`,
 		itemID, dependsOnID)
 	if err != nil {

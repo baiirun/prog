@@ -2,7 +2,9 @@ package tasks_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,21 +57,28 @@ func TestSetStatus_EpicOnlyAcceptsTerminal(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newTestService(t)
 	epic := create(t, svc, "p", model.ItemTypeEpic, model.StatusOpen, "epic")
+	child := create(t, svc, "p", model.ItemTypeTask, model.StatusOpen, "child")
+	if err := svc.SetParent(ctx, child.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, s := range []model.Status{model.StatusOpen, model.StatusInProgress, model.StatusDraft, model.StatusReviewing} {
+	for _, s := range []model.Status{model.StatusDraft, model.StatusOpen, model.StatusInProgress, model.StatusBlocked, model.StatusReviewing} {
 		if err := svc.SetStatus(ctx, epic.ID, s); err == nil {
 			t.Errorf("SetStatus(epic, %s) succeeded; derived epic status must not be overwritten", s)
 		}
 	}
-	if err := svc.SetStatus(ctx, epic.ID, model.StatusDone); err != nil {
-		t.Fatalf("force-close epic: %v", err)
+	// done and canceled force-close the epic over its open child.
+	for _, s := range []model.Status{model.StatusDone, model.StatusCanceled} {
+		if err := svc.SetStatus(ctx, epic.ID, s); err != nil {
+			t.Fatalf("force-close epic as %s: %v", s, err)
+		}
+		if got, _ := graph(t, svc).Item(epic.ID); got.Status != s {
+			t.Errorf("force-closed epic status = %s, want %s", got.Status, s)
+		}
 	}
-	got, _ := graph(t, svc).Item(epic.ID)
-	if got.Status != model.StatusDone {
-		t.Errorf("force-closed epic status = %s, want done", got.Status)
-	}
-	if err := svc.SetStatus(ctx, "ts-missing", model.StatusDone); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("SetStatus(missing) err = %v, want not found", err)
+	var nf *tasks.NotFoundError
+	if err := svc.SetStatus(ctx, "ts-missing", model.StatusDone); !errors.As(err, &nf) || nf.ID != "ts-missing" {
+		t.Errorf("SetStatus(missing) err = %v, want *NotFoundError for ts-missing", err)
 	}
 }
 
@@ -111,10 +120,7 @@ func TestCreateItem_AssignsPrefixedIDAndNormalizesProject(t *testing.T) {
 	if task.Project != "alpha" {
 		t.Errorf("Project = %q, want normalized %q", task.Project, "alpha")
 	}
-	items, err := graph(t, svc).List(tasks.ListFilter{Project: "alpha"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := graph(t, svc).List(tasks.ListFilter{Project: "alpha"})
 	if len(items) != 2 {
 		t.Errorf("List(alpha) returned %d items, want 2", len(items))
 	}
@@ -128,5 +134,48 @@ func TestCreateItem_AssignsPrefixedIDAndNormalizesProject(t *testing.T) {
 	}
 	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "x", Status: "bogus"}); err == nil {
 		t.Error("CreateItem accepted an invalid status")
+	}
+}
+
+// Protects #9 through `prog project`: a padded name must not create a second,
+// visually identical project.
+func TestSetProject_NormalizesAndEnsuresProject(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	task := create(t, svc, "alpha", model.ItemTypeTask, model.StatusOpen, "task")
+
+	if err := svc.SetProject(ctx, task.ID, "  beta\t"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := graph(t, svc).Item(task.ID); got.Project != "beta" {
+		t.Errorf("Project = %q, want %q", got.Project, "beta")
+	}
+	projects, _ := svc.ListProjects(ctx)
+	if !slices.Equal(projects, []string{"alpha", "beta"}) {
+		t.Errorf("ListProjects = %q, want [alpha beta]", projects)
+	}
+}
+
+// Protects label scoping: labels are per project, so AddLabel and RemoveLabel
+// must use the item's own project, not one supplied by the caller.
+func TestAddRemoveLabel_UseItemsProject(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	task := create(t, svc, "alpha", model.ItemTypeTask, model.StatusOpen, "task")
+	create(t, svc, "beta", model.ItemTypeTask, model.StatusOpen, "other")
+
+	if err := svc.AddLabel(ctx, task.ID, "bug"); err != nil {
+		t.Fatal(err)
+	}
+	alpha, _ := svc.ListLabels(ctx, "alpha")
+	beta, _ := svc.ListLabels(ctx, "beta")
+	if len(alpha) != 1 || alpha[0].Name != "bug" || len(beta) != 0 {
+		t.Errorf("labels alpha=%v beta=%v; want bug only in alpha", alpha, beta)
+	}
+	if err := svc.RemoveLabel(ctx, task.ID, "bug"); err != nil {
+		t.Fatalf("RemoveLabel: %v", err)
+	}
+	if got, _ := graph(t, svc).Item(task.ID); len(got.Labels) != 0 {
+		t.Errorf("Labels after RemoveLabel = %v, want none", got.Labels)
 	}
 }

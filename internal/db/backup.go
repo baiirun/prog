@@ -42,10 +42,8 @@ func (db *DB) Backup() (string, error) {
 	timestamp := time.Now().Format("2006-01-02T15-04-05")
 	backupFile := filepath.Join(backupDir, fmt.Sprintf("prog-%s.db", timestamp))
 
-	// Use SQLite's backup via VACUUM INTO for a consistent snapshot
-	_, err = db.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupFile))
-	if err != nil {
-		return "", fmt.Errorf("failed to create backup: %w", err)
+	if err := db.BackupTo(backupFile); err != nil {
+		return "", err
 	}
 
 	// Prune old backups
@@ -55,6 +53,15 @@ func (db *DB) Backup() (string, error) {
 	}
 
 	return backupFile, nil
+}
+
+// BackupTo writes a consistent snapshot of the database to path using
+// VACUUM INTO. The path is bound as a parameter, so quotes in it are safe.
+func (db *DB) BackupTo(path string) error {
+	if _, err := db.Exec(`VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("failed to create backup at %s: %w", path, err)
+	}
+	return nil
 }
 
 // BackupQuiet creates a backup without printing any output.

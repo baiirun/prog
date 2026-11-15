@@ -1,422 +1,267 @@
 package db
 
 import (
+	"context"
 	"testing"
-	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
 
+func createLabel(t *testing.T, db *DB, in model.NewLabel) {
+	t.Helper()
+	if err := db.CreateLabel(context.Background(), in); err != nil {
+		t.Fatalf("failed to create label %q: %v", in.Name, err)
+	}
+}
+
+func listLabels(t *testing.T, db *DB, project string) []model.Label {
+	t.Helper()
+	labels, err := db.ListLabels(context.Background(), project)
+	if err != nil {
+		t.Fatalf("failed to list labels: %v", err)
+	}
+	return labels
+}
+
+func labelNames(labels []model.Label) []string {
+	names := make([]string, len(labels))
+	for i, l := range labels {
+		names[i] = l.Name
+	}
+	return names
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCreateLabel(t *testing.T) {
 	db := setupTestDB(t)
 
-	now := time.Now()
-	label := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "bug",
-		Project:   "test",
-		Color:     "#ff0000",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "bug", Color: "#ff0000"})
 
-	if err := db.CreateLabel(label); err != nil {
-		t.Fatalf("failed to create label: %v", err)
+	labels := listLabels(t, db, "test")
+	if len(labels) != 1 {
+		t.Fatalf("got %d labels, want 1", len(labels))
 	}
-
-	// Verify it was created
-	got, err := db.GetLabelByName("test", "bug")
-	if err != nil {
-		t.Fatalf("failed to get label: %v", err)
+	got := labels[0]
+	if got.Name != "bug" {
+		t.Errorf("name = %q, want %q", got.Name, "bug")
 	}
-
-	if got.Name != label.Name {
-		t.Errorf("name = %q, want %q", got.Name, label.Name)
+	if got.Project != "test" {
+		t.Errorf("project = %q, want %q", got.Project, "test")
 	}
-	if got.Project != label.Project {
-		t.Errorf("project = %q, want %q", got.Project, label.Project)
+	if got.Color != "#ff0000" {
+		t.Errorf("color = %q, want %q", got.Color, "#ff0000")
 	}
-	if got.Color != label.Color {
-		t.Errorf("color = %q, want %q", got.Color, label.Color)
+	if got.ID == "" || got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Errorf("expected store to assign ID and timestamps, got %+v", got)
 	}
 }
 
-func TestGetLabel(t *testing.T) {
+func TestCreateLabel_DuplicateNameFails(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
 
-	now := time.Now()
-	label := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "feature",
-		Project:   "test",
-		CreatedAt: now,
-		UpdatedAt: now,
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "bug"})
+	if err := db.CreateLabel(ctx, model.NewLabel{Project: "test", Name: "bug"}); err == nil {
+		t.Error("expected error creating duplicate label in the same project")
 	}
-	if err := db.CreateLabel(label); err != nil {
-		t.Fatalf("failed to create label: %v", err)
-	}
-
-	// Get by ID
-	got, err := db.GetLabel(label.ID)
-	if err != nil {
-		t.Fatalf("failed to get label by ID: %v", err)
-	}
-	if got.Name != "feature" {
-		t.Errorf("name = %q, want %q", got.Name, "feature")
-	}
-}
-
-func TestGetLabelByName_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-
-	_, err := db.GetLabelByName("test", "nonexistent")
-	if err == nil {
-		t.Error("expected error for nonexistent label")
+	// The same name in another project is a different label.
+	if err := db.CreateLabel(ctx, model.NewLabel{Project: "other", Name: "bug"}); err != nil {
+		t.Errorf("same name in another project should succeed: %v", err)
 	}
 }
 
 func TestListLabels(t *testing.T) {
 	db := setupTestDB(t)
 
-	now := time.Now()
-	labels := []string{"alpha", "beta", "gamma"}
-	for _, name := range labels {
-		label := &model.Label{
-			ID:        model.GenerateLabelID(),
-			Name:      name,
-			Project:   "test",
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		if err := db.CreateLabel(label); err != nil {
-			t.Fatalf("failed to create label %s: %v", name, err)
-		}
+	for _, name := range []string{"gamma", "alpha", "beta"} {
+		createLabel(t, db, model.NewLabel{Project: "test", Name: name})
 	}
+	createLabel(t, db, model.NewLabel{Project: "other-project", Name: "other"})
 
-	// Add a label in different project
-	other := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "other",
-		Project:   "other-project",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateLabel(other); err != nil {
-		t.Fatalf("failed to create other label: %v", err)
-	}
-
-	// List should return only labels for "test" project
-	got, err := db.ListLabels("test")
-	if err != nil {
-		t.Fatalf("failed to list labels: %v", err)
-	}
-
-	if len(got) != 3 {
-		t.Errorf("got %d labels, want 3", len(got))
-	}
-
-	// Should be sorted by name
-	if got[0].Name != "alpha" {
-		t.Errorf("first label = %q, want %q", got[0].Name, "alpha")
+	// Only labels for "test", sorted by name.
+	got := labelNames(listLabels(t, db, "test"))
+	if want := []string{"alpha", "beta", "gamma"}; !equalStrings(got, want) {
+		t.Errorf("labels = %v, want %v", got, want)
 	}
 }
 
 func TestRenameLabel(t *testing.T) {
 	db := setupTestDB(t)
 
-	now := time.Now()
-	label := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "old-name",
-		Project:   "test",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateLabel(label); err != nil {
-		t.Fatalf("failed to create label: %v", err)
-	}
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "old-name"})
+	before := listLabels(t, db, "test")
 
-	if err := db.RenameLabel("test", "old-name", "new-name"); err != nil {
+	if err := db.RenameLabel(context.Background(), "test", "old-name", "new-name"); err != nil {
 		t.Fatalf("failed to rename label: %v", err)
 	}
 
-	// Old name should not work
-	_, err := db.GetLabelByName("test", "old-name")
-	if err == nil {
-		t.Error("expected error for old name")
+	after := listLabels(t, db, "test")
+	if len(after) != 1 || after[0].Name != "new-name" {
+		t.Fatalf("labels = %v, want [new-name]", labelNames(after))
 	}
-
-	// New name should work
-	got, err := db.GetLabelByName("test", "new-name")
-	if err != nil {
-		t.Fatalf("failed to get renamed label: %v", err)
-	}
-	if got.ID != label.ID {
+	if after[0].ID != before[0].ID {
 		t.Error("renamed label has different ID")
+	}
+}
+
+func TestRenameLabel_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	if err := db.RenameLabel(context.Background(), "test", "missing", "new"); err == nil {
+		t.Error("expected error renaming nonexistent label")
 	}
 }
 
 func TestDeleteLabel(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
 
-	now := time.Now()
-	label := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "to-delete",
-		Project:   "test",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateLabel(label); err != nil {
-		t.Fatalf("failed to create label: %v", err)
-	}
-
-	// Create an item and attach the label
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-	if err := db.AddLabelToItem(item.ID, "test", "to-delete"); err != nil {
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "to-delete"})
+	item := createTestItem(t, db, "Test task")
+	if err := db.AddLabelToItem(ctx, item.ID, "test", "to-delete"); err != nil {
 		t.Fatalf("failed to add label to item: %v", err)
 	}
 
-	// Delete the label
-	if err := db.DeleteLabel("test", "to-delete"); err != nil {
+	if err := db.DeleteLabel(ctx, "test", "to-delete"); err != nil {
 		t.Fatalf("failed to delete label: %v", err)
 	}
 
-	// Label should be gone
-	_, err := db.GetLabelByName("test", "to-delete")
-	if err == nil {
-		t.Error("expected error for deleted label")
+	if labels := listLabels(t, db, "test"); len(labels) != 0 {
+		t.Errorf("labels = %v, want none", labelNames(labels))
 	}
+	if got := loadItem(t, db, item.ID); len(got.Labels) != 0 {
+		t.Errorf("item labels = %v, want none", got.Labels)
+	}
+}
 
-	// Item should have no labels
-	labels, err := db.GetItemLabels(item.ID)
-	if err != nil {
-		t.Fatalf("failed to get item labels: %v", err)
-	}
-	if len(labels) != 0 {
-		t.Errorf("item has %d labels, want 0", len(labels))
+func TestDeleteLabel_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+
+	if err := db.DeleteLabel(context.Background(), "test", "missing"); err == nil {
+		t.Error("expected error deleting nonexistent label")
 	}
 }
 
 func TestAddLabelToItem(t *testing.T) {
 	db := setupTestDB(t)
+	item := createTestItem(t, db, "Test task")
 
-	now := time.Now()
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-
-	// Add label (should create it)
-	if err := db.AddLabelToItem(item.ID, "test", "new-label"); err != nil {
+	// Adding a missing label creates it.
+	if err := db.AddLabelToItem(context.Background(), item.ID, "test", "new-label"); err != nil {
 		t.Fatalf("failed to add label: %v", err)
 	}
 
-	// Label should exist
-	label, err := db.GetLabelByName("test", "new-label")
-	if err != nil {
-		t.Fatalf("label was not created: %v", err)
+	if got := labelNames(listLabels(t, db, "test")); !equalStrings(got, []string{"new-label"}) {
+		t.Errorf("project labels = %v, want [new-label]", got)
 	}
-
-	// Item should have the label
-	labels, err := db.GetItemLabels(item.ID)
-	if err != nil {
-		t.Fatalf("failed to get item labels: %v", err)
-	}
-	if len(labels) != 1 {
-		t.Fatalf("got %d labels, want 1", len(labels))
-	}
-	if labels[0].ID != label.ID {
-		t.Error("wrong label attached to item")
+	if got := loadItem(t, db, item.ID).Labels; !equalStrings(got, []string{"new-label"}) {
+		t.Errorf("item labels = %v, want [new-label]", got)
 	}
 }
 
 func TestAddLabelToItem_Idempotent(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
+	item := createTestItem(t, db, "Test task")
 
-	now := time.Now()
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-
-	// Add same label twice
-	if err := db.AddLabelToItem(item.ID, "test", "bug"); err != nil {
+	if err := db.AddLabelToItem(ctx, item.ID, "test", "bug"); err != nil {
 		t.Fatalf("first add failed: %v", err)
 	}
-	if err := db.AddLabelToItem(item.ID, "test", "bug"); err != nil {
+	if err := db.AddLabelToItem(ctx, item.ID, "test", "bug"); err != nil {
 		t.Fatalf("second add failed: %v", err)
 	}
 
-	// Should only have one label
-	labels, err := db.GetItemLabels(item.ID)
-	if err != nil {
-		t.Fatalf("failed to get item labels: %v", err)
+	if got := loadItem(t, db, item.ID).Labels; !equalStrings(got, []string{"bug"}) {
+		t.Errorf("item labels = %v, want [bug]", got)
 	}
+}
+
+// Attaching an existing label reuses it instead of creating a duplicate.
+func TestAddLabelToItem_ReusesExistingLabel(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "shared", Color: "#00ff00"})
+	first := createTestItem(t, db, "First")
+	second := createTestItem(t, db, "Second")
+
+	for _, item := range []model.Item{first, second} {
+		if err := db.AddLabelToItem(ctx, item.ID, "test", "shared"); err != nil {
+			t.Fatalf("failed to add label to %s: %v", item.ID, err)
+		}
+	}
+
+	labels := listLabels(t, db, "test")
 	if len(labels) != 1 {
-		t.Errorf("got %d labels, want 1", len(labels))
+		t.Fatalf("labels = %v, want one shared label", labelNames(labels))
+	}
+	if labels[0].Color != "#00ff00" {
+		t.Errorf("color = %q, want existing label's %q", labels[0].Color, "#00ff00")
+	}
+	if n := countRows(t, db, "item_labels", "label_id = ?", labels[0].ID); n != 2 {
+		t.Errorf("label attached to %d items, want 2", n)
 	}
 }
 
 func TestRemoveLabelFromItem(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
+	item := createTestItem(t, db, "Test task")
 
-	now := time.Now()
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-
-	// Add then remove
-	if err := db.AddLabelToItem(item.ID, "test", "temp"); err != nil {
+	if err := db.AddLabelToItem(ctx, item.ID, "test", "temp"); err != nil {
 		t.Fatalf("failed to add label: %v", err)
 	}
-	if err := db.RemoveLabelFromItem(item.ID, "test", "temp"); err != nil {
+	if err := db.RemoveLabelFromItem(ctx, item.ID, "test", "temp"); err != nil {
 		t.Fatalf("failed to remove label: %v", err)
 	}
 
-	// Item should have no labels
-	labels, err := db.GetItemLabels(item.ID)
-	if err != nil {
-		t.Fatalf("failed to get item labels: %v", err)
+	if got := loadItem(t, db, item.ID).Labels; len(got) != 0 {
+		t.Errorf("item labels = %v, want none", got)
 	}
-	if len(labels) != 0 {
-		t.Errorf("got %d labels, want 0", len(labels))
-	}
-
-	// Label should still exist (just not attached)
-	_, err = db.GetLabelByName("test", "temp")
-	if err != nil {
-		t.Error("label was deleted when it should only be detached")
+	// The label is only detached, not deleted.
+	if got := labelNames(listLabels(t, db, "test")); !equalStrings(got, []string{"temp"}) {
+		t.Errorf("project labels = %v, want [temp]", got)
 	}
 }
 
-func TestGetItemLabels_MultipleLabels(t *testing.T) {
+func TestRemoveLabelFromItem_NotAttached(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
+	item := createTestItem(t, db, "Test task")
 
-	now := time.Now()
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Test task",
-		Status:    model.StatusOpen,
-		CreatedAt: now,
-		UpdatedAt: now,
+	createLabel(t, db, model.NewLabel{Project: "test", Name: "unused"})
+	if err := db.RemoveLabelFromItem(ctx, item.ID, "test", "unused"); err == nil {
+		t.Error("expected error removing a label the item does not carry")
 	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
+	if err := db.RemoveLabelFromItem(ctx, item.ID, "test", "missing"); err == nil {
+		t.Error("expected error removing a nonexistent label")
 	}
+}
 
-	// Add multiple labels
-	labelNames := []string{"bug", "urgent", "backend"}
-	for _, name := range labelNames {
-		if err := db.AddLabelToItem(item.ID, "test", name); err != nil {
+func TestItemLabels_MultipleSorted(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	item := createTestItem(t, db, "Test task")
+
+	for _, name := range []string{"bug", "urgent", "backend"} {
+		if err := db.AddLabelToItem(ctx, item.ID, "test", name); err != nil {
 			t.Fatalf("failed to add label %s: %v", name, err)
 		}
 	}
 
-	// Get labels
-	labels, err := db.GetItemLabels(item.ID)
-	if err != nil {
-		t.Fatalf("failed to get item labels: %v", err)
-	}
-
-	if len(labels) != 3 {
-		t.Fatalf("got %d labels, want 3", len(labels))
-	}
-
-	// Should be sorted by name
-	if labels[0].Name != "backend" {
-		t.Errorf("first label = %q, want %q", labels[0].Name, "backend")
-	}
-	if labels[1].Name != "bug" {
-		t.Errorf("second label = %q, want %q", labels[1].Name, "bug")
-	}
-	if labels[2].Name != "urgent" {
-		t.Errorf("third label = %q, want %q", labels[2].Name, "urgent")
-	}
-}
-
-func TestSetLabelColor(t *testing.T) {
-	db := setupTestDB(t)
-
-	now := time.Now()
-	label := &model.Label{
-		ID:        model.GenerateLabelID(),
-		Name:      "colorful",
-		Project:   "test",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := db.CreateLabel(label); err != nil {
-		t.Fatalf("failed to create label: %v", err)
-	}
-
-	if err := db.SetLabelColor("test", "colorful", "#00ff00"); err != nil {
-		t.Fatalf("failed to set color: %v", err)
-	}
-
-	got, err := db.GetLabelByName("test", "colorful")
-	if err != nil {
-		t.Fatalf("failed to get label: %v", err)
-	}
-	if got.Color != "#00ff00" {
-		t.Errorf("color = %q, want %q", got.Color, "#00ff00")
-	}
-}
-
-func TestEnsureLabel(t *testing.T) {
-	db := setupTestDB(t)
-
-	// First call creates
-	label1, err := db.EnsureLabel("test", "ensured")
-	if err != nil {
-		t.Fatalf("first ensure failed: %v", err)
-	}
-
-	// Second call returns existing
-	label2, err := db.EnsureLabel("test", "ensured")
-	if err != nil {
-		t.Fatalf("second ensure failed: %v", err)
-	}
-
-	if label1.ID != label2.ID {
-		t.Error("ensure created duplicate label")
+	got := loadItem(t, db, item.ID).Labels
+	if want := []string{"backend", "bug", "urgent"}; !equalStrings(got, want) {
+		t.Errorf("item labels = %v, want %v", got, want)
 	}
 }

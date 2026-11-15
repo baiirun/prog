@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 func TestReadyJSON_EmptyResult(t *testing.T) {
@@ -28,45 +30,29 @@ func TestReadyJSON_EmptyResult(t *testing.T) {
 }
 
 func TestReadyJSON_WithItems(t *testing.T) {
-	database := setupTestDB(t)
+	ctx := context.Background()
+	svc := setupTestService(t)
 
-	parentID := "ep-parent"
-
-	// Create parent epic first (FK constraint)
-	epic := &model.Item{
-		ID: parentID, Project: "test", Type: model.ItemTypeEpic,
+	epic := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeEpic,
 		Title: "Epic", Status: model.StatusOpen,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(epic); err != nil {
-		t.Fatalf("create epic: %v", err)
-	}
+	})
+	parentID := epic.ID
 
-	taskA := &model.Item{
-		ID: "ts-aaa111", Project: "test", Type: model.ItemTypeTask,
+	taskA := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
 		Title: "Task A", Status: model.StatusOpen, Priority: 1,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(taskA); err != nil {
-		t.Fatalf("create task A: %v", err)
-	}
+	})
 
-	taskB := &model.Item{
-		ID: "ts-bbb222", Project: "test", Type: model.ItemTypeTask,
+	taskB := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
 		Title: "Task B", Status: model.StatusOpen, Priority: 2,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(taskB); err != nil {
-		t.Fatalf("create task B: %v", err)
-	}
-	if err := database.SetParent("ts-bbb222", parentID); err != nil {
+	})
+	if err := svc.SetParent(ctx, taskB.ID, parentID); err != nil {
 		t.Fatalf("set parent: %v", err)
 	}
 
-	readyItems, err := database.ReadyItems("test")
-	if err != nil {
-		t.Fatalf("ready items: %v", err)
-	}
+	readyItems := mustGraph(t, svc).Ready("test", nil)
 
 	output := captureOutput(func() {
 		jsonItems := make([]ItemReadyJSON, 0, len(readyItems))
@@ -88,11 +74,11 @@ func TestReadyJSON_WithItems(t *testing.T) {
 		t.Fatalf("invalid JSON: %v\noutput: %s", err, output)
 	}
 
-	// Should have at least the tasks we created (epic is also open/unblocked)
+	// Should have at least the tasks we created
 	found := map[string]bool{}
 	for _, r := range result {
 		found[r.ID] = true
-		if r.ID == "ts-aaa111" {
+		if r.ID == taskA.ID {
 			if r.Title != "Task A" {
 				t.Errorf("title = %q, want %q", r.Title, "Task A")
 			}
@@ -106,26 +92,26 @@ func TestReadyJSON_WithItems(t *testing.T) {
 				t.Errorf("parent = %v, want nil", r.Parent)
 			}
 		}
-		if r.ID == "ts-bbb222" {
+		if r.ID == taskB.ID {
 			if r.Parent == nil || *r.Parent != parentID {
 				t.Errorf("parent = %v, want %q", r.Parent, parentID)
 			}
 		}
 	}
-	if !found["ts-aaa111"] {
-		t.Error("missing ts-aaa111 in ready output")
+	if !found[taskA.ID] {
+		t.Errorf("missing task A (%s) in ready output", taskA.ID)
 	}
-	if !found["ts-bbb222"] {
-		t.Error("missing ts-bbb222 in ready output")
+	if !found[taskB.ID] {
+		t.Errorf("missing task B (%s) in ready output", taskB.ID)
 	}
 }
 
 func TestShowJSON_FullDetail(t *testing.T) {
-	database := setupTestDB(t)
+	ctx := context.Background()
+	svc := setupTestService(t)
 
 	dod := "Tests pass"
-	item := &model.Item{
-		ID:               "ts-show01",
+	item := mustCreate(t, svc, model.NewItem{
 		Project:          "test",
 		Type:             model.ItemTypeTask,
 		Title:            "Show Task",
@@ -133,52 +119,43 @@ func TestShowJSON_FullDetail(t *testing.T) {
 		DefinitionOfDone: &dod,
 		Status:           model.StatusInProgress,
 		Priority:         1,
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
-	}
-	if err := database.CreateItem(item); err != nil {
-		t.Fatalf("create item: %v", err)
-	}
+	})
 
 	// Add a log
-	if err := database.AddLog(item.ID, "Started work"); err != nil {
+	if err := svc.AddLog(ctx, item.ID, "Started work"); err != nil {
 		t.Fatalf("add log: %v", err)
 	}
 
 	// Add a label
-	if err := database.AddLabelToItem(item.ID, "test", "bug"); err != nil {
+	if err := svc.AddLabel(ctx, item.ID, "bug"); err != nil {
 		t.Fatalf("add label: %v", err)
 	}
 
 	// Create a blocker and dependency
-	blocker := &model.Item{
-		ID: "ts-block01", Project: "test", Type: model.ItemTypeTask,
+	blocker := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
 		Title: "Blocker", Status: model.StatusOpen,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(blocker); err != nil {
-		t.Fatalf("create blocker: %v", err)
-	}
-	if err := database.AddDep(item.ID, blocker.ID); err != nil {
+	})
+	if err := svc.AddDep(ctx, item.ID, blocker.ID); err != nil {
 		t.Fatalf("add dep: %v", err)
 	}
 
 	// Fetch all data like showCmd does
-	got, _ := database.GetItem(item.ID)
-	labels, _ := database.GetItemLabels(item.ID)
-	for _, l := range labels {
-		got.Labels = append(got.Labels, l.Name)
+	g := mustGraph(t, svc)
+	got, err := g.Item(item.ID)
+	if err != nil {
+		t.Fatalf("get item: %v", err)
 	}
-	logs, _ := database.GetLogs(item.ID)
-	deps, _ := database.GetDeps(item.ID)
+	deps := g.DepsOf(item.ID)
+	logs, err := svc.Logs(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("get logs: %v", err)
+	}
 
 	output := captureOutput(func() {
 		itemLabels := got.Labels
 		if itemLabels == nil {
 			itemLabels = []string{}
-		}
-		if deps == nil {
-			deps = []string{}
 		}
 		logEntries := make([]LogJSON, 0, len(logs))
 		for _, l := range logs {
@@ -211,8 +188,8 @@ func TestShowJSON_FullDetail(t *testing.T) {
 	}
 
 	// Verify all fields
-	if result.ID != "ts-show01" {
-		t.Errorf("id = %q, want ts-show01", result.ID)
+	if result.ID != item.ID {
+		t.Errorf("id = %q, want %q", result.ID, item.ID)
 	}
 	if result.Title != "Show Task" {
 		t.Errorf("title = %q", result.Title)
@@ -241,7 +218,7 @@ func TestShowJSON_FullDetail(t *testing.T) {
 	if len(result.Labels) != 1 || result.Labels[0] != "bug" {
 		t.Errorf("labels = %v", result.Labels)
 	}
-	if len(result.Dependencies) != 1 || result.Dependencies[0] != "ts-block01" {
+	if len(result.Dependencies) != 1 || result.Dependencies[0] != blocker.ID {
 		t.Errorf("dependencies = %v", result.Dependencies)
 	}
 	if len(result.Logs) != 1 || result.Logs[0].Message != "Started work" {
@@ -254,28 +231,29 @@ func TestShowJSON_FullDetail(t *testing.T) {
 }
 
 func TestShowJSON_EmptyArrayFields(t *testing.T) {
-	database := setupTestDB(t)
+	ctx := context.Background()
+	svc := setupTestService(t)
 
-	item := &model.Item{
-		ID: "ts-empty01", Project: "test", Type: model.ItemTypeTask,
+	item := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
 		Title: "Empty Fields", Status: model.StatusOpen, Priority: 2,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(item); err != nil {
-		t.Fatalf("create item: %v", err)
-	}
+	})
 
-	got, _ := database.GetItem(item.ID)
-	logs, _ := database.GetLogs(item.ID)
-	deps, _ := database.GetDeps(item.ID)
+	g := mustGraph(t, svc)
+	got, err := g.Item(item.ID)
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	deps := g.DepsOf(item.ID)
+	logs, err := svc.Logs(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("get logs: %v", err)
+	}
 
 	output := captureOutput(func() {
 		itemLabels := got.Labels
 		if itemLabels == nil {
 			itemLabels = []string{}
-		}
-		if deps == nil {
-			deps = []string{}
 		}
 		logEntries := make([]LogJSON, 0, len(logs))
 		for _, l := range logs {
@@ -315,37 +293,27 @@ func TestShowJSON_EmptyArrayFields(t *testing.T) {
 }
 
 func TestListJSON_WithItems(t *testing.T) {
-	database := setupTestDB(t)
+	ctx := context.Background()
+	svc := setupTestService(t)
 
-	items := []*model.Item{
-		{
-			ID: "ts-list01", Project: "test", Type: model.ItemTypeTask,
-			Title: "List Task 1", Status: model.StatusOpen, Priority: 1,
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-		{
-			ID: "ts-list02", Project: "test", Type: model.ItemTypeTask,
-			Title: "List Task 2", Status: model.StatusDone, Priority: 2,
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-	}
-	for _, item := range items {
-		if err := database.CreateItem(item); err != nil {
-			t.Fatalf("create item: %v", err)
-		}
-	}
+	list01 := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
+		Title: "List Task 1", Status: model.StatusOpen, Priority: 1,
+	})
+	list02 := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
+		Title: "List Task 2", Status: model.StatusDone, Priority: 2,
+	})
 
 	// Add dep: list01 depends on list02
-	if err := database.AddDep("ts-list01", "ts-list02"); err != nil {
+	if err := svc.AddDep(ctx, list01.ID, list02.ID); err != nil {
 		t.Fatalf("add dep: %v", err)
 	}
 
-	allItems, err := database.ListItems("test", nil)
+	g := mustGraph(t, svc)
+	allItems, err := g.List(tasks.ListFilter{Project: "test"})
 	if err != nil {
 		t.Fatalf("list items: %v", err)
-	}
-	if err := database.PopulateItemLabels(allItems); err != nil {
-		t.Fatalf("populate labels: %v", err)
 	}
 
 	output := captureOutput(func() {
@@ -355,10 +323,7 @@ func TestListJSON_WithItems(t *testing.T) {
 			if labels == nil {
 				labels = []string{}
 			}
-			deps, _ := database.GetDeps(item.ID)
-			if deps == nil {
-				deps = []string{}
-			}
+			deps := g.DepsOf(item.ID)
 			jsonItems = append(jsonItems, ItemListJSON{
 				ID:               item.ID,
 				Title:            item.Title,
@@ -386,19 +351,19 @@ func TestListJSON_WithItems(t *testing.T) {
 		t.Fatalf("expected 2 items, got %d", len(result))
 	}
 
-	// Find ts-list01 and verify it has dependency
+	// Find list01 and verify it has dependency
 	for _, r := range result {
-		if r.ID == "ts-list01" {
-			if len(r.Dependencies) != 1 || r.Dependencies[0] != "ts-list02" {
-				t.Errorf("ts-list01 deps = %v, want [ts-list02]", r.Dependencies)
+		if r.ID == list01.ID {
+			if len(r.Dependencies) != 1 || r.Dependencies[0] != list02.ID {
+				t.Errorf("list01 deps = %v, want [%s]", r.Dependencies, list02.ID)
 			}
 			if r.Status != "open" {
 				t.Errorf("status = %q, want open", r.Status)
 			}
 		}
-		if r.ID == "ts-list02" {
+		if r.ID == list02.ID {
 			if len(r.Dependencies) != 0 {
-				t.Errorf("ts-list02 deps = %v, want []", r.Dependencies)
+				t.Errorf("list02 deps = %v, want []", r.Dependencies)
 			}
 			if r.Status != "done" {
 				t.Errorf("status = %q, want done", r.Status)
@@ -422,16 +387,12 @@ func TestListJSON_EmptyResult(t *testing.T) {
 }
 
 func TestListJSON_NoLogsField(t *testing.T) {
-	database := setupTestDB(t)
+	svc := setupTestService(t)
 
-	item := &model.Item{
-		ID: "ts-nolog", Project: "test", Type: model.ItemTypeTask,
+	item := mustCreate(t, svc, model.NewItem{
+		Project: "test", Type: model.ItemTypeTask,
 		Title: "No Logs", Status: model.StatusOpen, Priority: 2,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(item); err != nil {
-		t.Fatalf("create item: %v", err)
-	}
+	})
 
 	output := captureOutput(func() {
 		out := []ItemListJSON{{

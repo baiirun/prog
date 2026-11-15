@@ -2,15 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 func captureOutput(f func()) string {
@@ -52,7 +53,7 @@ func TestPrintPrimeContent_NilReport(t *testing.T) {
 }
 
 func TestPrintPrimeContent_WithReport(t *testing.T) {
-	report := &db.StatusReport{
+	report := &tasks.StatusReport{
 		Project:    "test",
 		Open:       5,
 		InProgress: 2,
@@ -95,7 +96,7 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 }
 
 func TestPrintPrimeContent_EmptyReport(t *testing.T) {
-	report := &db.StatusReport{
+	report := &tasks.StatusReport{
 		Project:      "",
 		Open:         0,
 		InProgress:   0,
@@ -179,49 +180,68 @@ func TestPrintPrimeContent_NoLearnings(t *testing.T) {
 	}
 }
 
-func setupTestDB(t *testing.T) *db.DB {
+// setupTestService returns a Service over a fresh SQLite database, wired the
+// same way openService wires it for commands.
+func setupTestService(t *testing.T) *tasks.Service {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.db")
-
-	database, err := db.Open(path)
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
+	t.Cleanup(func() { _ = database.Close() })
 
 	if err := database.Init(); err != nil {
 		t.Fatalf("failed to init db: %v", err)
 	}
+	return tasks.NewService(database)
+}
 
-	t.Cleanup(func() { _ = database.Close() })
-	return database
+// mustCreate adds an item through the Service and fails the test on error.
+func mustCreate(t *testing.T, svc *tasks.Service, item model.NewItem) model.Item {
+	t.Helper()
+	created, err := svc.CreateItem(context.Background(), item)
+	if err != nil {
+		t.Fatalf("failed to create %q: %v", item.Title, err)
+	}
+	return created
+}
+
+// mustGraph loads a fresh snapshot and fails the test on error.
+func mustGraph(t *testing.T, svc *tasks.Service) *tasks.Graph {
+	t.Helper()
+	g, err := svc.Graph(context.Background())
+	if err != nil {
+		t.Fatalf("failed to load graph: %v", err)
+	}
+	return g
+}
+
+// mustItem reads one item from a fresh snapshot and fails the test on error.
+func mustItem(t *testing.T, svc *tasks.Service, id string) model.Item {
+	t.Helper()
+	item, err := mustGraph(t, svc).Item(id)
+	if err != nil {
+		t.Fatalf("failed to get item %s: %v", id, err)
+	}
+	return item
 }
 
 func TestPrimeCommand_Integration(t *testing.T) {
-	database := setupTestDB(t)
+	svc := setupTestService(t)
 
 	// Create some test data
-	item := &model.Item{
-		ID:        "ts-test01",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Integration test task",
-		Status:    model.StatusInProgress,
-		Priority:  1,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
+	mustCreate(t, svc, model.NewItem{
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Integration test task",
+		Status:   model.StatusInProgress,
+		Priority: 1,
+	})
 
-	report, err := database.ProjectStatus("")
-	if err != nil {
-		t.Fatalf("failed to get status: %v", err)
-	}
+	report := mustGraph(t, svc).Report("", nil)
 
 	output := captureOutput(func() {
-		printPrimeContent(report)
+		printPrimeContent(&report)
 	})
 
 	// Should contain the test task

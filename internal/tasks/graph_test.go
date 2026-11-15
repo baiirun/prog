@@ -177,3 +177,26 @@ func TestNewGraph_RejectsInvalidStoredStatus(t *testing.T) {
 		t.Fatal("NewGraph accepted an invalid stored type")
 	}
 }
+
+// Protects `prog graph` output order: deps under one item are listed by ID,
+// as the old SQL did, not in insertion order.
+func TestEdges_OrderedByDependentThenDependency(t *testing.T) {
+	g := mustGraph(t, []model.Item{
+		item("ts-b", "p", task, model.StatusOpen),
+		item("ts-a", "p", task, model.StatusOpen),
+		item("ts-z", "p", task, model.StatusOpen),
+		item("ts-y", "p", task, model.StatusOpen),
+	},
+		model.Dep{ItemID: "ts-b", DependsOn: "ts-z"},
+		model.Dep{ItemID: "ts-b", DependsOn: "ts-y"},
+		model.Dep{ItemID: "ts-a", DependsOn: "ts-z"},
+	)
+	var got []string
+	for _, e := range g.Edges("") {
+		got = append(got, e.ItemID+">"+e.DependsOnID)
+	}
+	want := []string{"ts-a>ts-z", "ts-b>ts-y", "ts-b>ts-z"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Edges = %v, want %v", got, want)
+	}
+}

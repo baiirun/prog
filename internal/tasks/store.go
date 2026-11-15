@@ -29,7 +29,8 @@ type Store interface {
 	// CreateItem stores a new item and returns it with its assigned ID.
 	// Requires: the item's project exists (see EnsureProject).
 	CreateItem(ctx context.Context, item model.NewItem) (model.Item, error)
-	// DeleteItem removes an item with its logs and dependency edges.
+	// DeleteItem atomically removes an item with its logs, labels and
+	// dependency edges. Fails, deleting nothing, if the item has children.
 	DeleteItem(ctx context.Context, id string) error
 
 	// The setters below fail when id does not exist and bump UpdatedAt.

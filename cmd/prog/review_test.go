@@ -1,77 +1,57 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
 
 func TestReviewCmd_TransitionsFromInProgress(t *testing.T) {
-	database := setupTestDB(t)
+	ctx := context.Background()
+	svc := setupTestService(t)
 
 	// Create a task in in_progress state
-	task := &model.Item{
-		ID:        "ts-rev001",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Review test task",
-		Status:    model.StatusInProgress,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
+	task := mustCreate(t, svc, model.NewItem{
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Review test task",
+		Status:   model.StatusInProgress,
+		Priority: 2,
+	})
 
 	// Simulate what reviewCmd does: check status, then update
-	item, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
-	}
+	item := mustItem(t, svc, task.ID)
 	if item.Status != model.StatusInProgress {
 		t.Fatalf("expected in_progress, got %s", item.Status)
 	}
 
-	if err := database.UpdateStatus(task.ID, model.StatusReviewing); err != nil {
+	if err := svc.SetStatus(ctx, task.ID, model.StatusReviewing); err != nil {
 		t.Fatalf("failed to update status: %v", err)
 	}
 
 	// Verify the status was updated
-	got, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get task: %v", err)
-	}
+	got := mustItem(t, svc, task.ID)
 	if got.Status != model.StatusReviewing {
 		t.Errorf("status = %q, want %q", got.Status, model.StatusReviewing)
 	}
 }
 
 func TestReviewCmd_RejectsOpenTask(t *testing.T) {
-	database := setupTestDB(t)
+	svc := setupTestService(t)
 
 	// Create a task in open state
-	task := &model.Item{
-		ID:        "ts-rev002",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Open task",
-		Status:    model.StatusOpen,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
+	task := mustCreate(t, svc, model.NewItem{
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Open task",
+		Status:   model.StatusOpen,
+		Priority: 2,
+	})
 
 	// Simulate what reviewCmd does: check status first
-	item, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
-	}
+	item := mustItem(t, svc, task.ID)
 
 	// Should reject because status is not in_progress
 	if item.Status == model.StatusInProgress {
@@ -86,26 +66,17 @@ func TestReviewCmd_RejectsOpenTask(t *testing.T) {
 }
 
 func TestReviewCmd_RejectsDoneTask(t *testing.T) {
-	database := setupTestDB(t)
+	svc := setupTestService(t)
 
-	task := &model.Item{
-		ID:        "ts-rev003",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Done task",
-		Status:    model.StatusDone,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
+	task := mustCreate(t, svc, model.NewItem{
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Done task",
+		Status:   model.StatusDone,
+		Priority: 2,
+	})
 
-	item, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
-	}
+	item := mustItem(t, svc, task.ID)
 
 	if item.Status == model.StatusInProgress {
 		t.Fatal("expected non-in_progress status")
@@ -113,26 +84,17 @@ func TestReviewCmd_RejectsDoneTask(t *testing.T) {
 }
 
 func TestReviewCmd_RejectsBlockedTask(t *testing.T) {
-	database := setupTestDB(t)
+	svc := setupTestService(t)
 
-	task := &model.Item{
-		ID:        "ts-rev004",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Blocked task",
-		Status:    model.StatusBlocked,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
+	task := mustCreate(t, svc, model.NewItem{
+		Project:  "test",
+		Type:     model.ItemTypeTask,
+		Title:    "Blocked task",
+		Status:   model.StatusBlocked,
+		Priority: 2,
+	})
 
-	item, err := database.GetItem(task.ID)
-	if err != nil {
-		t.Fatalf("failed to get item: %v", err)
-	}
+	item := mustItem(t, svc, task.ID)
 
 	if item.Status == model.StatusInProgress {
 		t.Fatal("expected non-in_progress status")

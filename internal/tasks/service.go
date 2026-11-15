@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/baiirun/prog/internal/model"
 )
@@ -18,47 +19,119 @@ func NewService(store Store) *Service {
 
 // Graph loads a fresh snapshot. Callers load once per command and read from it.
 func (s *Service) Graph(ctx context.Context) (*Graph, error) {
-	panic("not implemented")
+	items, deps, err := s.store.LoadGraph(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return NewGraph(items, deps)
 }
 
 // CreateItem validates type and status, normalizes the project and ensures it
 // exists, then creates the item.
 func (s *Service) CreateItem(ctx context.Context, item model.NewItem) (model.Item, error) {
-	panic("not implemented")
+	if !item.Type.IsValid() {
+		return model.Item{}, fmt.Errorf("invalid item type: %s", item.Type)
+	}
+	if !item.Status.IsValid() {
+		return model.Item{}, fmt.Errorf("invalid status: %s", item.Status)
+	}
+	item.Project = model.NormalizeProject(item.Project)
+	if item.Project != "" {
+		if err := s.store.EnsureProject(ctx, item.Project); err != nil {
+			return model.Item{}, err
+		}
+	}
+	return s.store.CreateItem(ctx, item)
 }
 
 // SetStatus changes an item's stored status.
 // Ensures: an error for epics unless status is done or canceled, because
 // derivation would hide any other stored value.
 func (s *Service) SetStatus(ctx context.Context, id string, status model.Status) error {
-	panic("not implemented")
+	if !status.IsValid() {
+		return fmt.Errorf("invalid status: %s", status)
+	}
+	item, err := s.item(ctx, id)
+	if err != nil {
+		return err
+	}
+	if item.Type == model.ItemTypeEpic && !isTerminal(status) {
+		return fmt.Errorf("epic status is derived from children; only 'done' and 'canceled' can be set manually (to force-close)")
+	}
+	return s.store.SetStatus(ctx, id, status)
 }
 
 // SetParent makes parentID the parent of id.
 // Ensures: an error unless both exist and parentID is an epic.
 func (s *Service) SetParent(ctx context.Context, id, parentID string) error {
-	panic("not implemented")
+	g, err := s.Graph(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := g.Item(id); err != nil {
+		return err
+	}
+	parent, err := g.Item(parentID)
+	if err != nil {
+		return fmt.Errorf("parent not found: %s (use 'prog list' to see available items)", parentID)
+	}
+	if parent.Type != model.ItemTypeEpic {
+		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
+	}
+	return s.store.SetParent(ctx, id, parentID)
 }
 
 // SetProject normalizes the project, ensures it exists, then moves the item.
 func (s *Service) SetProject(ctx context.Context, id, project string) error {
-	panic("not implemented")
+	project = model.NormalizeProject(project)
+	if project != "" {
+		if err := s.store.EnsureProject(ctx, project); err != nil {
+			return err
+		}
+	}
+	return s.store.SetProject(ctx, id, project)
 }
 
 // AddDep records that itemID depends on dependsOnID.
 // Ensures: an error unless both items exist.
 func (s *Service) AddDep(ctx context.Context, itemID, dependsOnID string) error {
-	panic("not implemented")
+	g, err := s.Graph(ctx)
+	if err != nil {
+		return err
+	}
+	_, errItem := g.Item(itemID)
+	_, errDep := g.Item(dependsOnID)
+	if errItem != nil || errDep != nil {
+		return fmt.Errorf("one or both items not found: %s, %s (use 'prog list' to see available items)", itemID, dependsOnID)
+	}
+	return s.store.AddDep(ctx, itemID, dependsOnID)
 }
 
 // AddLabel attaches a label from the item's own project, creating it if missing.
 func (s *Service) AddLabel(ctx context.Context, itemID, name string) error {
-	panic("not implemented")
+	item, err := s.item(ctx, itemID)
+	if err != nil {
+		return err
+	}
+	return s.store.AddLabelToItem(ctx, itemID, item.Project, name)
 }
 
 // RemoveLabel detaches a label from the item's own project.
 func (s *Service) RemoveLabel(ctx context.Context, itemID, name string) error {
-	panic("not implemented")
+	item, err := s.item(ctx, itemID)
+	if err != nil {
+		return err
+	}
+	return s.store.RemoveLabelFromItem(ctx, itemID, item.Project, name)
+}
+
+// item loads a fresh graph and returns one item from it.
+func (s *Service) item(ctx context.Context, id string) (model.Item, error) {
+	g, err := s.Graph(ctx)
+	if err != nil {
+		return model.Item{}, err
+	}
+	return g.Item(id)
 }
 
 func (s *Service) SetTitle(ctx context.Context, id, title string) error {

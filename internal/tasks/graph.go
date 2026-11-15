@@ -317,7 +317,8 @@ type DepEdge struct {
 }
 
 // Edges returns edges whose endpoints both exist and whose dependent item is
-// in project ("" means all), ordered by the dependent's priority, then ID.
+// in project ("" means all), ordered by the dependent's priority, then its
+// ID, then the dependency's ID.
 func (g *Graph) Edges(project string) []DepEdge {
 	var edges []DepEdge
 	for _, id := range g.order {
@@ -341,7 +342,10 @@ func (g *Graph) Edges(project string) []DepEdge {
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
 		}
-		return a.ID < b.ID
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		return edges[i].DependsOnID < edges[j].DependsOnID
 	})
 	return edges
 }

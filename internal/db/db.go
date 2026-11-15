@@ -7,8 +7,10 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -170,6 +172,11 @@ DELETE FROM projects WHERE name != TRIM(name, ' ' || char(9, 10, 11, 12, 13));
 `,
 }
 
+// busyTimeoutMS is how long a connection waits for a lock held by another
+// writer (other prog processes, or agents running concurrently) before
+// failing with SQLITE_BUSY.
+const busyTimeoutMS = 5000
+
 // DB is the SQLite implementation of tasks.Store. The connection is private
 // so callers go through Store methods instead of writing SQL against it.
 type DB struct {
@@ -194,41 +201,48 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".prog", "prog.db"), nil
 }
 
-// Open opens or creates the database at the given path
+// Open opens or creates the database file at path, a plain filesystem path
+// (not a "file:" URI or ":memory:").
 func Open(path string) (*DB, error) {
-	// Ensure directory exists
+	// The driver treats everything after '?' as connection parameters, so
+	// such a path would silently open a different file; "" would put the
+	// parameters themselves in the file name.
+	if path == "" || strings.ContainsRune(path, '?') {
+		return nil, fmt.Errorf("database path must be non-empty and must not contain '?': %q", path)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite", path)
+	// SQLite scopes these pragmas to one connection and database/sql opens
+	// connections lazily, so they go in the DSN, which the driver applies to
+	// every new connection. busy_timeout comes before journal_mode because
+	// switching to WAL takes a lock; without the timeout a concurrent
+	// process gets SQLITE_BUSY instead of waiting. WAL lets readers proceed
+	// while another process writes.
+	//
+	// _txlock=immediate takes the write lock at BEGIN. A deferred
+	// transaction that reads and then writes fails with SQLITE_BUSY_SNAPSHOT
+	// if another writer committed in between, and busy_timeout cannot help.
+	dsn := path + "?" + url.Values{
+		"_pragma": {
+			fmt.Sprintf("busy_timeout(%d)", busyTimeoutMS),
+			"foreign_keys(1)",
+			"journal_mode(WAL)",
+		},
+		"_txlock": {"immediate"},
+	}.Encode()
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to open database %s: %w", path, err)
 	}
-
-	// Enable foreign keys
-	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	// sql.Open is lazy; connect now so a bad path or failed pragma is
+	// reported here rather than by the first query.
+	if err := conn.Ping(); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+		return nil, fmt.Errorf("failed to open database %s: %w", path, err)
 	}
-
-	// Set busy timeout BEFORE WAL mode. The WAL mode pragma requires an
-	// exclusive lock, and without a busy timeout already set, a concurrent
-	// connection will get an immediate SQLITE_BUSY (error 261) instead of
-	// waiting. This was causing "database is locked" errors when the
-	// aetherflow daemon's poller and status handler hit prog concurrently.
-	if _, err := conn.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
-	}
-
-	// Enable WAL mode for better concurrency (allows concurrent readers during writes)
-	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
-
 	return &DB{conn: conn}, nil
 }
 

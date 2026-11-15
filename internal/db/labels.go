@@ -13,21 +13,15 @@ import (
 
 // CreateLabel fails if the name already exists in the project.
 func (db *DB) CreateLabel(ctx context.Context, in model.NewLabel) error {
-	_, err := db.insertLabel(ctx, in)
-	return err
-}
-
-func (db *DB) insertLabel(ctx context.Context, in model.NewLabel) (string, error) {
-	id := model.GenerateLabelID()
 	now := time.Now()
 	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO labels (id, name, project, color, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Project, in.Color, now, now)
+		model.GenerateLabelID(), in.Name, in.Project, in.Color, now, now)
 	if err != nil {
-		return "", fmt.Errorf("failed to create label %q: %w", in.Name, err)
+		return fmt.Errorf("failed to create label %q: %w", in.Name, err)
 	}
-	return id, nil
+	return nil
 }
 
 // findLabelID returns the ID of a label by project and name, and whether it exists.
@@ -114,20 +108,33 @@ func (db *DB) DeleteLabel(ctx context.Context, project, name string) error {
 }
 
 // AddLabelToItem creates the label in project if missing. Idempotent.
+// Creating and attaching share one transaction, so a concurrent DeleteLabel
+// cannot remove the label in between.
 func (db *DB) AddLabelToItem(ctx context.Context, itemID, project, name string) error {
-	labelID, found, err := db.findLabelID(ctx, project, name)
+	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
 	}
-	if !found {
-		if labelID, err = db.insertLabel(ctx, model.NewLabel{Project: project, Name: name}); err != nil {
-			return err
-		}
+	defer func() { _ = tx.Rollback() }()
+
+	// The no-op update makes RETURNING yield the existing row's ID on conflict.
+	var labelID string
+	now := time.Now()
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO labels (id, name, project, color, created_at, updated_at)
+		VALUES (?, ?, ?, '', ?, ?)
+		ON CONFLICT(name, project) DO UPDATE SET name = excluded.name
+		RETURNING id`,
+		model.GenerateLabelID(), name, project, now, now).Scan(&labelID)
+	if err != nil {
+		return fmt.Errorf("failed to ensure label %q: %w", name, err)
 	}
-	_, err = db.conn.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`,
-		itemID, labelID)
-	if err != nil {
+		itemID, labelID); err != nil {
+		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
 	}
 	return nil

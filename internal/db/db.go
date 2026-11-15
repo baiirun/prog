@@ -201,12 +201,14 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".prog", "prog.db"), nil
 }
 
-// Open opens or creates the database at the given path.
+// Open opens or creates the database file at path, a plain filesystem path
+// (not a "file:" URI or ":memory:").
 func Open(path string) (*DB, error) {
 	// The driver treats everything after '?' as connection parameters, so
-	// such a path would silently open a different file.
-	if strings.ContainsRune(path, '?') {
-		return nil, fmt.Errorf("database path must not contain '?': %s", path)
+	// such a path would silently open a different file; "" would put the
+	// parameters themselves in the file name.
+	if path == "" || strings.ContainsRune(path, '?') {
+		return nil, fmt.Errorf("database path must be non-empty and must not contain '?': %q", path)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -219,11 +221,18 @@ func Open(path string) (*DB, error) {
 	// switching to WAL takes a lock; without the timeout a concurrent
 	// process gets SQLITE_BUSY instead of waiting. WAL lets readers proceed
 	// while another process writes.
-	dsn := path + "?" + url.Values{"_pragma": {
-		fmt.Sprintf("busy_timeout(%d)", busyTimeoutMS),
-		"foreign_keys(1)",
-		"journal_mode(WAL)",
-	}}.Encode()
+	//
+	// _txlock=immediate takes the write lock at BEGIN. A deferred
+	// transaction that reads and then writes fails with SQLITE_BUSY_SNAPSHOT
+	// if another writer committed in between, and busy_timeout cannot help.
+	dsn := path + "?" + url.Values{
+		"_pragma": {
+			fmt.Sprintf("busy_timeout(%d)", busyTimeoutMS),
+			"foreign_keys(1)",
+			"journal_mode(WAL)",
+		},
+		"_txlock": {"immediate"},
+	}.Encode()
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database %s: %w", path, err)

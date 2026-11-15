@@ -24,29 +24,6 @@ func (db *DB) CreateLabel(ctx context.Context, in model.NewLabel) error {
 	return nil
 }
 
-// ensureLabelID returns the label's ID, creating the label if missing. The
-// insert ignores a conflicting row instead of checking first, so concurrent
-// first uses of one name cannot both decide to create it.
-func (db *DB) ensureLabelID(ctx context.Context, project, name string) (string, error) {
-	now := time.Now()
-	_, err := db.conn.ExecContext(ctx, `
-		INSERT INTO labels (id, name, project, color, created_at, updated_at)
-		VALUES (?, ?, ?, '', ?, ?)
-		ON CONFLICT(name, project) DO NOTHING`,
-		model.GenerateLabelID(), name, project, now, now)
-	if err != nil {
-		return "", fmt.Errorf("failed to ensure label %q: %w", name, err)
-	}
-	id, found, err := db.findLabelID(ctx, project, name)
-	if err != nil {
-		return "", err
-	}
-	if !found {
-		return "", fmt.Errorf("label %q missing right after insert", name)
-	}
-	return id, nil
-}
-
 // findLabelID returns the ID of a label by project and name, and whether it exists.
 func (db *DB) findLabelID(ctx context.Context, project, name string) (string, bool, error) {
 	var id string
@@ -131,15 +108,33 @@ func (db *DB) DeleteLabel(ctx context.Context, project, name string) error {
 }
 
 // AddLabelToItem creates the label in project if missing. Idempotent.
+// Creating and attaching share one transaction, so a concurrent DeleteLabel
+// cannot remove the label in between.
 func (db *DB) AddLabelToItem(ctx context.Context, itemID, project, name string) error {
-	labelID, err := db.ensureLabelID(ctx, project, name)
+	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
 	}
-	_, err = db.conn.ExecContext(ctx,
-		`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`,
-		itemID, labelID)
+	defer func() { _ = tx.Rollback() }()
+
+	// The no-op update makes RETURNING yield the existing row's ID on conflict.
+	var labelID string
+	now := time.Now()
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO labels (id, name, project, color, created_at, updated_at)
+		VALUES (?, ?, ?, '', ?, ?)
+		ON CONFLICT(name, project) DO UPDATE SET name = excluded.name
+		RETURNING id`,
+		model.GenerateLabelID(), name, project, now, now).Scan(&labelID)
 	if err != nil {
+		return fmt.Errorf("failed to ensure label %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`,
+		itemID, labelID); err != nil {
+		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
 	}
 	return nil

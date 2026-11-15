@@ -117,10 +117,21 @@ func (db *DB) AddLabelToItem(ctx context.Context, itemID, project, name string) 
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := attachLabel(ctx, tx, itemID, project, name); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
+	}
+	return nil
+}
+
+// attachLabel creates the label if missing and attaches it, inside tx.
+func attachLabel(ctx context.Context, tx *sql.Tx, itemID, project, name string) error {
 	// The no-op update makes RETURNING yield the existing row's ID on conflict.
 	var labelID string
 	now := time.Now()
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 		INSERT INTO labels (id, name, project, color, created_at, updated_at)
 		VALUES (?, ?, ?, '', ?, ?)
 		ON CONFLICT(name, project) DO UPDATE SET name = excluded.name
@@ -132,9 +143,6 @@ func (db *DB) AddLabelToItem(ctx context.Context, itemID, project, name string) 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO item_labels (item_id, label_id) VALUES (?, ?)`,
 		itemID, labelID); err != nil {
-		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
-	}
-	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to add label %q to %s: %w", name, itemID, err)
 	}
 	return nil

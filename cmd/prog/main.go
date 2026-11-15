@@ -194,12 +194,12 @@ Examples:
 		if flagParent != "" {
 			newItem.ParentID = &flagParent
 		}
-		links := tasks.ItemLinks{Labels: flagAddLabels}
 		if flagBlocks != "" {
-			links.Blocks = []string{flagBlocks}
+			newItem.Blocks = []string{flagBlocks}
 		}
+		newItem.Labels = flagAddLabels
 
-		item, err := svc.CreateItem(ctx, newItem, links)
+		item, err := svc.CreateItem(ctx, newItem)
 		if err != nil {
 			return err
 		}
@@ -691,9 +691,6 @@ Example:
 		defer func() { _ = database.Close() }()
 		ctx := cmd.Context()
 
-		// Back up before, not after: delete is the one change that can't be
-		// undone, so the backup must still contain the item.
-		database.BackupQuiet()
 		if err := svc.DeleteItem(ctx, args[0]); err != nil {
 			return err
 		}
@@ -1611,7 +1608,8 @@ var backupCmd = &cobra.Command{
 	Long: `Create a backup of the prog database.
 
 Backups are stored in ~/.prog/backups/ by default with timestamped names.
-The last 10 backups are kept; older ones are automatically pruned.
+The newest 20 backups are kept, plus the newest backup of each of the
+last 14 days; older ones are pruned automatically.
 
 Optionally specify a custom path for the backup file.
 
@@ -1665,11 +1663,11 @@ Shows backups in ~/.prog/backups/, newest first.`,
 			return nil
 		}
 
-		fmt.Printf("%-32s  %10s  %s\n", "BACKUP", "SIZE", "CREATED")
+		fmt.Printf("%-40s  %10s  %s\n", "BACKUP", "SIZE", "CREATED")
 		for _, b := range backups {
 			size := formatSize(b.Size)
 			age := formatTimeAgo(b.ModTime)
-			fmt.Printf("%-32s  %10s  %s\n", b.Name, size, age)
+			fmt.Printf("%-40s  %10s  %s\n", b.Name, size, age)
 		}
 		return nil
 	},
@@ -1684,7 +1682,7 @@ This replaces the current database with the backup.
 A backup of the current database is created first.
 
 Examples:
-  prog restore ~/.prog/backups/prog-2024-01-09T12-00-00.000.db
+  prog restore ~/.prog/backups/prog-2024-01-09T12-00-00-123456789.db
   prog restore ~/my-backup.db`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

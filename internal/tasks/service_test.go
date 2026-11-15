@@ -35,7 +35,7 @@ func create(t *testing.T, svc *tasks.Service, project string, typ model.ItemType
 	t.Helper()
 	item, err := svc.CreateItem(context.Background(), model.NewItem{
 		Project: project, Type: typ, Title: title, Status: status, Priority: 2,
-	}, tasks.ItemLinks{})
+	})
 	if err != nil {
 		t.Fatalf("create %q: %v", title, err)
 	}
@@ -129,10 +129,10 @@ func TestCreateItem_AssignsPrefixedIDAndNormalizesProject(t *testing.T) {
 		t.Errorf("ListProjects = %q, want [alpha]", projects)
 	}
 
-	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: "story", Title: "x", Status: model.StatusOpen}, tasks.ItemLinks{}); err == nil {
+	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: "story", Title: "x", Status: model.StatusOpen}); err == nil {
 		t.Error("CreateItem accepted an invalid type")
 	}
-	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "x", Status: "bogus"}, tasks.ItemLinks{}); err == nil {
+	if _, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "x", Status: "bogus"}); err == nil {
 		t.Error("CreateItem accepted an invalid status")
 	}
 }
@@ -180,32 +180,58 @@ func TestAddRemoveLabel_UseItemsProject(t *testing.T) {
 	}
 }
 
-// failingLabels is the real store with AddLabelToItem failing, standing in for
-// an I/O error after the item row is written.
-type failingLabels struct{ tasks.Store }
-
-func (failingLabels) AddLabelToItem(context.Context, string, string, string) error {
-	return errors.New("disk full")
+// snapshots is the real store plus a Snapshot that can be made to fail.
+type snapshots struct {
+	tasks.Store
+	err   error
+	taken int
 }
 
-// Protects CreateItem's all-or-nothing promise: a write that fails after the
-// item exists removes the item again instead of leaving it half linked.
-func TestCreateItem_RollsBackWhenLinkingFails(t *testing.T) {
+func (s *snapshots) Snapshot() error {
+	s.taken++
+	return s.err
+}
+
+// Protects delete's fail-closed rule: no snapshot, no delete.
+func TestDeleteItem_RefusesWhenSnapshotFails(t *testing.T) {
 	ctx := context.Background()
 	_, database := newTestService(t)
-	svc := tasks.NewService(failingLabels{database})
-	blocked := create(t, tasks.NewService(database), "p", model.ItemTypeTask, model.StatusOpen, "blocked")
+	store := &snapshots{Store: database, err: errors.New("disk full")}
+	svc := tasks.NewService(store)
+	item := create(t, svc, "p", model.ItemTypeTask, model.StatusOpen, "keep me")
 
-	_, err := svc.CreateItem(ctx, model.NewItem{Project: "p", Type: model.ItemTypeTask, Title: "new", Status: model.StatusOpen},
-		tasks.ItemLinks{Blocks: []string{blocked.ID}, Labels: []string{"bug"}})
-	if err == nil || !strings.Contains(err.Error(), "disk full") {
-		t.Fatalf("CreateItem err = %v, want the label failure", err)
+	if err := svc.DeleteItem(ctx, item.ID); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("DeleteItem err = %v, want the snapshot failure", err)
 	}
-	g := graph(t, svc)
-	if items := g.List(tasks.ListFilter{Project: "p"}); len(items) != 1 || items[0].ID != blocked.ID {
-		t.Errorf("items after failed create = %v, want only %s", items, blocked.ID)
+	if _, err := graph(t, svc).Item(item.ID); err != nil {
+		t.Errorf("item deleted although its snapshot failed: %v", err)
 	}
-	if deps := g.DepsOf(blocked.ID); len(deps) != 0 {
-		t.Errorf("dependency from failed create survived: %v", deps)
+}
+
+// Protects backup history: a delete that cannot happen (missing item, epic
+// with children) takes no snapshot, so retries don't churn backups.
+func TestDeleteItem_InvalidDeleteTakesNoSnapshot(t *testing.T) {
+	ctx := context.Background()
+	_, database := newTestService(t)
+	store := &snapshots{Store: database}
+	svc := tasks.NewService(store)
+	epic := create(t, svc, "p", model.ItemTypeEpic, model.StatusOpen, "epic")
+	child := create(t, svc, "p", model.ItemTypeTask, model.StatusOpen, "child")
+	if err := svc.SetParent(ctx, child.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var nf *tasks.NotFoundError
+	if err := svc.DeleteItem(ctx, "ts-missing"); !errors.As(err, &nf) {
+		t.Errorf("DeleteItem(missing) err = %v, want *NotFoundError", err)
+	}
+	if err := svc.DeleteItem(ctx, epic.ID); err == nil {
+		t.Error("DeleteItem(epic with child) succeeded")
+	}
+	if store.taken != 0 {
+		t.Errorf("%d snapshots taken for deletes that could not happen", store.taken)
+	}
+	if err := svc.DeleteItem(ctx, child.ID); err != nil || store.taken != 1 {
+		t.Errorf("valid delete: err=%v snapshots=%d, want nil and 1", err, store.taken)
 	}
 }

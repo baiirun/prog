@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,8 +11,8 @@ import (
 	"github.com/baiirun/prog/internal/tasks"
 )
 
-// CreateItem stores a new item and returns it with its assigned ID.
-// Requires: the item's project exists (see EnsureProject).
+// CreateItem stores a new item with its labels and dependents in one
+// transaction, so a failure or crash leaves nothing behind.
 func (db *DB) CreateItem(ctx context.Context, in model.NewItem) (model.Item, error) {
 	now := time.Now()
 	item := model.Item{
@@ -24,19 +25,63 @@ func (db *DB) CreateItem(ctx context.Context, in model.NewItem) (model.Item, err
 		Status:           in.Status,
 		Priority:         in.Priority,
 		ParentID:         in.ParentID,
+		Labels:           in.Labels,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	_, err := db.conn.ExecContext(ctx, `
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Item{}, fmt.Errorf("failed to create item: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	referenced := in.Blocks
+	if in.ParentID != nil {
+		referenced = append([]string{*in.ParentID}, referenced...)
+	}
+	for _, id := range referenced {
+		if err := requireItem(ctx, tx, id); err != nil {
+			return model.Item{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO items (id, project, type, title, description, definition_of_done, status, priority, parent_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Project, item.Type, item.Title, item.Description, item.DefinitionOfDone,
 		item.Status, item.Priority, item.ParentID, item.CreatedAt, item.UpdatedAt,
-	)
-	if err != nil {
+	); err != nil {
+		return model.Item{}, fmt.Errorf("failed to create item: %w", err)
+	}
+	for _, dependent := range in.Blocks {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO deps (item_id, depends_on) VALUES (?, ?)`,
+			dependent, item.ID); err != nil {
+			return model.Item{}, fmt.Errorf("failed to add dependency %s -> %s: %w", dependent, item.ID, err)
+		}
+	}
+	for _, name := range in.Labels {
+		if err := attachLabel(ctx, tx, item.ID, item.Project, name); err != nil {
+			return model.Item{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return model.Item{}, fmt.Errorf("failed to create item: %w", err)
 	}
 	return item, nil
+}
+
+// requireItem returns *tasks.NotFoundError unless id exists, inside tx.
+func requireItem(ctx context.Context, tx *sql.Tx, id string) error {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM items WHERE id = ?`, id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &tasks.NotFoundError{Record: tasks.RecordItem, ID: id}
+	}
+	if err != nil {
+		return fmt.Errorf("failed to look up %s: %w", id, err)
+	}
+	return nil
 }
 
 // SetStatus changes an item's stored status.

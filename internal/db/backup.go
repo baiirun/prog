@@ -10,8 +10,11 @@ import (
 )
 
 const (
-	// MaxBackups is the maximum number of backups to keep
-	MaxBackups = 10
+	// Retention: the newest keepRecentBackups, plus the newest backup of each
+	// of the last keepDailyBackupsDays calendar days (today included), so a
+	// burst of agent mutations cannot push out every backup from last week.
+	keepRecentBackups    = 20
+	keepDailyBackupsDays = 14
 	// BackupDir is the subdirectory for backups within the prog directory
 	BackupDir = "backups"
 )
@@ -38,22 +41,37 @@ func (db *DB) Backup() (string, error) {
 		return "", fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// Milliseconds keep back-to-back mutations from colliding: VACUUM INTO
-	// refuses to overwrite, so a second backup in the same second would fail.
-	timestamp := time.Now().Format("2006-01-02T15-04-05.000")
-	backupFile := filepath.Join(backupDir, fmt.Sprintf("prog-%s.db", timestamp))
-
+	backupFile, err := reserveBackupName(backupDir, time.Now())
+	if err != nil {
+		return "", err
+	}
 	if err := db.BackupTo(backupFile); err != nil {
 		return "", err
 	}
 
-	// Prune old backups
-	if err := pruneBackups(backupDir, MaxBackups); err != nil {
+	if err := pruneBackups(backupDir, time.Now()); err != nil {
 		// Log but don't fail the backup
 		fmt.Fprintf(os.Stderr, "warning: failed to prune old backups: %v\n", err)
 	}
 
 	return backupFile, nil
+}
+
+// reserveBackupName returns an unused backup path. VACUUM INTO refuses to
+// overwrite, so names must be unique even for backups taken in the same
+// instant by different processes: os.CreateTemp picks the name atomically,
+// and the empty placeholder is removed so VACUUM INTO can create the file.
+func reserveBackupName(dir string, now time.Time) (string, error) {
+	f, err := os.CreateTemp(dir, "prog-"+now.Format("2006-01-02T15-04-05")+"-*.db")
+	if err != nil {
+		return "", fmt.Errorf("failed to reserve backup name: %w", err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	if err := os.Remove(name); err != nil {
+		return "", fmt.Errorf("failed to reserve backup name: %w", err)
+	}
+	return name, nil
 }
 
 // BackupTo writes a consistent snapshot of the database to path using
@@ -63,6 +81,12 @@ func (db *DB) BackupTo(path string) error {
 		return fmt.Errorf("failed to create backup at %s: %w", path, err)
 	}
 	return nil
+}
+
+// Snapshot implements tasks.Snapshotter.
+func (db *DB) Snapshot() error {
+	_, err := db.Backup()
+	return err
 }
 
 // BackupQuiet creates a backup after a mutation. A failed backup must not
@@ -79,7 +103,10 @@ func ListBackups() ([]BackupInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return listBackupsIn(backupDir)
+}
 
+func listBackupsIn(backupDir string) ([]BackupInfo, error) {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -90,19 +117,14 @@ func ListBackups() ([]BackupInfo, error) {
 
 	var backups []BackupInfo
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "prog-") || !strings.HasSuffix(name, ".db") {
+		if entry.IsDir() || !strings.HasPrefix(name, "prog-") || !strings.HasSuffix(name, ".db") {
 			continue
 		}
-
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
-
 		backups = append(backups, BackupInfo{
 			Path:    filepath.Join(backupDir, name),
 			Name:    name,
@@ -110,12 +132,9 @@ func ListBackups() ([]BackupInfo, error) {
 			ModTime: info.ModTime(),
 		})
 	}
-
-	// Sort newest first
 	sort.Slice(backups, func(i, j int) bool {
 		return backups[i].ModTime.After(backups[j].ModTime)
 	})
-
 	return backups, nil
 }
 
@@ -127,54 +146,43 @@ type BackupInfo struct {
 	ModTime time.Time
 }
 
-// pruneBackups removes old backups, keeping only the newest 'keep' backups.
-func pruneBackups(backupDir string, keep int) error {
-	entries, err := os.ReadDir(backupDir)
+// pruneBackups removes the backups the retention policy does not keep.
+func pruneBackups(backupDir string, now time.Time) error {
+	backups, err := listBackupsIn(backupDir)
 	if err != nil {
 		return err
 	}
-
-	// Filter to only backup files
-	type backupFile struct {
-		name    string
-		modTime time.Time
-	}
-	var backups []backupFile
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, "prog-") || !strings.HasSuffix(name, ".db") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		backups = append(backups, backupFile{name: name, modTime: info.ModTime()})
-	}
-
-	// Sort oldest first
-	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].modTime.Before(backups[j].modTime)
-	})
-
-	// Remove oldest backups if we have more than 'keep'
-	toRemove := len(backups) - keep
-	if toRemove <= 0 {
-		return nil
-	}
-
-	for i := 0; i < toRemove; i++ {
-		path := filepath.Join(backupDir, backups[i].name)
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("failed to remove old backup %s: %w", backups[i].name, err)
+	for _, b := range backupsToPrune(backups, now) {
+		if err := os.Remove(b.Path); err != nil {
+			return fmt.Errorf("failed to remove old backup %s: %w", b.Name, err)
 		}
 	}
-
 	return nil
+}
+
+// backupsToPrune applies the retention policy to backups sorted newest first
+// and returns the ones to delete.
+func backupsToPrune(backups []BackupInfo, now time.Time) []BackupInfo {
+	oldestDay := startOfDay(now).AddDate(0, 0, -(keepDailyBackupsDays - 1))
+	keptDay := map[time.Time]bool{}
+	var prune []BackupInfo
+	for i, b := range backups {
+		day := startOfDay(b.ModTime)
+		switch {
+		case i < keepRecentBackups:
+			keptDay[day] = true
+		case !day.Before(oldestDay) && !keptDay[day]:
+			keptDay[day] = true
+		default:
+			prune = append(prune, b)
+		}
+	}
+	return prune
+}
+
+func startOfDay(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }
 
 // Restore copies a backup file to the main database location.

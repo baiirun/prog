@@ -67,8 +67,9 @@ func NewGraph(items []model.Item, deps []model.Dep) (*Graph, error) {
 }
 
 // deriveEpicStatus is the epic status rule. children holds the stored status
-// of each direct child; a nested epic contributes its stored status, not its
-// derived one.
+// of each direct child. A nested epic contributes its stored status, not its
+// derived one, by design: a parent epic completes only when its child epics
+// are force-closed, even if all of their own children are done.
 //
 //   - stored done/canceled wins (manual force-close)
 //   - no children: draft

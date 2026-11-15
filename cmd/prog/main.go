@@ -11,6 +11,7 @@ import (
 
 	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 	"github.com/baiirun/prog/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -76,6 +77,16 @@ func openDB() (*db.DB, error) {
 		return nil, fmt.Errorf("migration failed: %w", err)
 	}
 	return database, nil
+}
+
+// openService opens the SQLite store and wraps it in the domain service.
+// The *db.DB is returned for Close and for SQLite-only commands (backups).
+func openService() (*tasks.Service, *db.DB, error) {
+	database, err := openDB()
+	if err != nil {
+		return nil, nil, err
+	}
+	return tasks.NewService(database), database, nil
 }
 
 var rootCmd = &cobra.Command{
@@ -145,11 +156,12 @@ Examples:
 			return fmt.Errorf("project is required (-p)")
 		}
 
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		itemType := model.ItemTypeTask
 		if flagEpic {
@@ -161,34 +173,32 @@ Examples:
 			status = model.StatusDraft
 		}
 
-		item := &model.Item{
-			ID:        model.GenerateID(itemType),
-			Project:   flagProject,
-			Type:      itemType,
-			Title:     strings.Join(args, " "),
-			Status:    status,
-			Priority:  flagPriority,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+		newItem := model.NewItem{
+			Project:  flagProject,
+			Type:     itemType,
+			Title:    strings.Join(args, " "),
+			Status:   status,
+			Priority: flagPriority,
 		}
 
 		// Set definition of done if specified
 		if cmd.Flags().Changed("dod") && flagDoD != "" {
-			item.DefinitionOfDone = &flagDoD
+			newItem.DefinitionOfDone = &flagDoD
 		}
 
 		// Set description if specified
 		if cmd.Flags().Changed("desc") && flagDesc != "" {
-			item.Description = flagDesc
+			newItem.Description = flagDesc
 		}
 
-		if err := database.CreateItem(item); err != nil {
+		item, err := svc.CreateItem(ctx, newItem)
+		if err != nil {
 			return err
 		}
 
 		// Set parent if specified
 		if flagParent != "" {
-			if err := database.SetParent(item.ID, flagParent); err != nil {
+			if err := svc.SetParent(ctx, item.ID, flagParent); err != nil {
 				return err
 			}
 		}
@@ -197,14 +207,14 @@ Examples:
 		if flagBlocks != "" {
 			// This new item blocks the specified item
 			// (the blocked item depends on this new one)
-			if err := database.AddDep(flagBlocks, item.ID); err != nil {
+			if err := svc.AddDep(ctx, flagBlocks, item.ID); err != nil {
 				return err
 			}
 		}
 
 		// Add labels if specified
 		for _, labelName := range flagAddLabels {
-			if err := database.AddLabelToItem(item.ID, item.Project, labelName); err != nil {
+			if err := svc.AddLabel(ctx, item.ID, labelName); err != nil {
 				return err
 			}
 		}
@@ -237,42 +247,32 @@ Examples:
   prog list -l bug -l urgent
   prog list --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		filter, err := listFlags{
+			project:     flagProject,
+			status:      flagStatus,
+			parent:      flagListParent,
+			itemType:    flagListType,
+			blocking:    flagBlocking,
+			blockedBy:   flagBlockedBy,
+			hasBlockers: flagHasBlockers,
+			noBlockers:  flagNoBlockers,
+			labels:      flagFilterLabels,
+		}.parse()
+		if err != nil {
+			return err
+		}
+
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
 
-		var status *model.Status
-		if flagStatus != "" {
-			s := model.Status(flagStatus)
-			if !s.IsValid() {
-				return fmt.Errorf("invalid status: %s (valid: draft, open, in_progress, blocked, reviewing, done, canceled)", flagStatus)
-			}
-			status = &s
-		}
-
-		filter := db.ListFilter{
-			Project:     flagProject,
-			Status:      status,
-			Parent:      flagListParent,
-			Type:        flagListType,
-			Blocking:    flagBlocking,
-			BlockedBy:   flagBlockedBy,
-			HasBlockers: flagHasBlockers,
-			NoBlockers:  flagNoBlockers,
-			Labels:      flagFilterLabels,
-		}
-
-		items, err := database.ListItemsFiltered(filter)
+		g, err := svc.Graph(cmd.Context())
 		if err != nil {
 			return err
 		}
-
-		// Populate labels for display
-		if err := database.PopulateItemLabels(items); err != nil {
-			return err
-		}
+		items := g.List(filter)
 
 		if flagJSON {
 			if len(items) == 0 {
@@ -285,13 +285,7 @@ Examples:
 				if labels == nil {
 					labels = []string{}
 				}
-				deps, err := database.GetDeps(item.ID)
-				if err != nil {
-					return err
-				}
-				if deps == nil {
-					deps = []string{}
-				}
+				deps := g.DepsOf(item.ID)
 				output = append(output, ItemListJSON{
 					ID:               item.ID,
 					Title:            item.Title,
@@ -321,6 +315,46 @@ Examples:
 	},
 }
 
+// listFlags is the raw `prog list` input; parse turns it into a filter.
+type listFlags struct {
+	project, status, parent, itemType, blocking, blockedBy string
+	hasBlockers, noBlockers                                bool
+	labels                                                 []string
+}
+
+func (f listFlags) parse() (tasks.ListFilter, error) {
+	filter := tasks.ListFilter{
+		Project:   f.project,
+		Parent:    f.parent,
+		Blocking:  f.blocking,
+		BlockedBy: f.blockedBy,
+		Labels:    f.labels,
+	}
+	if f.status != "" {
+		s := model.Status(f.status)
+		if !s.IsValid() {
+			return tasks.ListFilter{}, fmt.Errorf("invalid status: %s (valid: draft, open, in_progress, blocked, reviewing, done, canceled)", f.status)
+		}
+		filter.Status = &s
+	}
+	if f.itemType != "" {
+		t := model.ItemType(f.itemType)
+		if !t.IsValid() {
+			return tasks.ListFilter{}, fmt.Errorf("invalid type: %s (valid: task, epic)", f.itemType)
+		}
+		filter.Type = t
+	}
+	switch {
+	case f.hasBlockers && f.noBlockers:
+		return tasks.ListFilter{}, fmt.Errorf("--has-blockers and --no-blockers are mutually exclusive")
+	case f.hasBlockers:
+		filter.Blockers = tasks.WithUnresolvedBlockers
+	case f.noBlockers:
+		filter.Blockers = tasks.WithoutUnresolvedBlockers
+	}
+	return filter, nil
+}
+
 var readyCmd = &cobra.Command{
 	Use:   "ready",
 	Short: "Show tasks ready for work (unblocked)",
@@ -338,16 +372,18 @@ Examples:
   prog ready -l bug
   prog ready --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		items, err := database.ReadyItemsFiltered(flagProject, flagFilterLabels)
+		g, err := svc.Graph(ctx)
 		if err != nil {
 			return err
 		}
+		items := g.Ready(flagProject, flagFilterLabels)
 
 		if len(items) == 0 {
 			if flagJSON {
@@ -356,11 +392,6 @@ Examples:
 			}
 			fmt.Println("No ready tasks")
 			return nil
-		}
-
-		// Populate labels for display
-		if err := database.PopulateItemLabels(items); err != nil {
-			return err
 		}
 
 		if flagJSON {
@@ -397,32 +428,24 @@ Examples:
   prog show ts-a1b2c3 --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		item, err := database.GetItem(args[0])
+		g, err := svc.Graph(ctx)
 		if err != nil {
 			return err
 		}
-
-		// Get labels for display
-		labels, err := database.GetItemLabels(args[0])
+		item, err := g.Item(args[0])
 		if err != nil {
 			return err
 		}
-		for _, l := range labels {
-			item.Labels = append(item.Labels, l.Name)
-		}
+		deps := g.DepsOf(args[0])
 
-		logs, err := database.GetLogs(args[0])
-		if err != nil {
-			return err
-		}
-
-		deps, err := database.GetDeps(args[0])
+		logs, err := svc.Logs(ctx, args[0])
 		if err != nil {
 			return err
 		}
@@ -431,9 +454,6 @@ Examples:
 			labels := item.Labels
 			if labels == nil {
 				labels = []string{}
-			}
-			if deps == nil {
-				deps = []string{}
 			}
 			logEntries := make([]LogJSON, 0, len(logs))
 			for _, l := range logs {
@@ -466,7 +486,7 @@ Examples:
 			return nil
 		}
 
-		printItemDetail(item, logs, deps)
+		printItemDetail(&item, logs, deps)
 		return nil
 	},
 }
@@ -476,13 +496,14 @@ var startCmd = &cobra.Command{
 	Short: "Start working on a task",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.UpdateStatus(args[0], model.StatusInProgress); err != nil {
+		if err := svc.SetStatus(ctx, args[0], model.StatusInProgress); err != nil {
 			return err
 		}
 		fmt.Printf("Started %s\n", args[0])
@@ -495,13 +516,14 @@ var doneCmd = &cobra.Command{
 	Short: "Mark a task as done",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.UpdateStatus(args[0], model.StatusDone); err != nil {
+		if err := svc.SetStatus(ctx, args[0], model.StatusDone); err != nil {
 			return err
 		}
 		fmt.Printf("Completed %s\n", args[0])
@@ -527,16 +549,21 @@ Example:
   prog review ts-a1b2c3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 
 		// Verify the task is in_progress before transitioning
-		item, err := database.GetItem(id)
+		g, err := svc.Graph(ctx)
+		if err != nil {
+			return err
+		}
+		item, err := g.Item(id)
 		if err != nil {
 			return err
 		}
@@ -544,7 +571,7 @@ Example:
 			return fmt.Errorf("can only review in_progress tasks (current status: %s)", item.Status)
 		}
 
-		if err := database.UpdateStatus(id, model.StatusReviewing); err != nil {
+		if err := svc.SetStatus(ctx, id, model.StatusReviewing); err != nil {
 			return err
 		}
 		fmt.Printf("Marked %s as reviewing\n", id)
@@ -569,21 +596,22 @@ Example:
   prog cancel ts-a1b2c3 "Requirements changed, no longer needed"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 
-		if err := database.UpdateStatus(id, model.StatusCanceled); err != nil {
+		if err := svc.SetStatus(ctx, id, model.StatusCanceled); err != nil {
 			return err
 		}
 
 		if len(args) > 1 {
 			reason := strings.Join(args[1:], " ")
-			if err := database.AddLog(id, "Canceled: "+reason); err != nil {
+			if err := svc.AddLog(ctx, id, "Canceled: "+reason); err != nil {
 				return err
 			}
 			fmt.Printf("Canceled %s: %s\n", id, reason)
@@ -610,13 +638,14 @@ Example:
   prog draft ts-a1b2c3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.UpdateStatus(args[0], model.StatusDraft); err != nil {
+		if err := svc.SetStatus(ctx, args[0], model.StatusDraft); err != nil {
 			return err
 		}
 		fmt.Printf("Moved %s to draft\n", args[0])
@@ -639,13 +668,14 @@ Example:
   prog open ts-a1b2c3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.UpdateStatus(args[0], model.StatusOpen); err != nil {
+		if err := svc.SetStatus(ctx, args[0], model.StatusOpen); err != nil {
 			return err
 		}
 		fmt.Printf("Reopened %s\n", args[0])
@@ -669,13 +699,14 @@ Example:
   prog delete ts-a1b2c3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.DeleteItem(args[0]); err != nil {
+		if err := svc.DeleteItem(ctx, args[0]); err != nil {
 			return err
 		}
 		fmt.Printf("Deleted %s\n", args[0])
@@ -694,16 +725,17 @@ Example:
   prog log ts-a1b2c3 "Implemented token refresh logic"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 		message := strings.Join(args[1:], " ")
 
-		if err := database.AddLog(id, message); err != nil {
+		if err := svc.AddLog(ctx, id, message); err != nil {
 			return err
 		}
 		fmt.Printf("Logged to %s\n", id)
@@ -722,16 +754,18 @@ Examples:
   prog graph
   prog graph -p myproject`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		edges, err := database.GetAllDeps(flagProject)
+		g, err := svc.Graph(ctx)
 		if err != nil {
 			return err
 		}
+		edges := g.Edges(flagProject)
 
 		if len(edges) == 0 {
 			fmt.Println("No dependencies")
@@ -748,13 +782,14 @@ var projectsCmd = &cobra.Command{
 	Short: "List all projects",
 	Long:  `List all projects that have tasks.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		projects, err := database.ListProjects()
+		projects, err := svc.ListProjects(ctx)
 		if err != nil {
 			return err
 		}
@@ -792,26 +827,19 @@ Examples:
   prog status --all
   prog status -l bug`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		report, err := database.ProjectStatusFiltered(flagProject, flagFilterLabels)
+		g, err := svc.Graph(ctx)
 		if err != nil {
 			return err
 		}
-
-		// Populate labels for all item slices in the report
-		_ = database.PopulateItemLabels(report.DraftItems)
-		_ = database.PopulateItemLabels(report.RecentDone)
-		_ = database.PopulateItemLabels(report.InProgItems)
-		_ = database.PopulateItemLabels(report.ReviewingItems)
-		_ = database.PopulateItemLabels(report.BlockedItems)
-		_ = database.PopulateItemLabels(report.ReadyItems)
-
-		printStatusReport(report, flagStatusAll)
+		report := g.Report(flagProject, flagFilterLabels)
+		printStatusReport(&report, flagStatusAll)
 		return nil
 	},
 }
@@ -827,16 +855,17 @@ Example:
   prog append ts-a1b2c3 "Decided to use JWT instead of sessions"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 		text := strings.Join(args[1:], " ")
 
-		if err := database.AppendDescription(id, text); err != nil {
+		if err := svc.AppendDescription(ctx, id, text); err != nil {
 			return err
 		}
 		fmt.Printf("Appended to %s\n", id)
@@ -863,11 +892,12 @@ Examples:
   PROG_EDITOR=code prog edit ts-a1b2c3    # Use VS Code as editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 
@@ -877,7 +907,7 @@ Examples:
 			if flagDoD != "" {
 				dod = &flagDoD
 			}
-			if err := database.SetDefinitionOfDone(id, dod); err != nil {
+			if err := svc.SetDefinitionOfDone(ctx, id, dod); err != nil {
 				return err
 			}
 			if dod == nil {
@@ -890,7 +920,7 @@ Examples:
 
 		// If --title flag is set, update title directly
 		if flagEditTitle != "" {
-			if err := database.SetTitle(id, flagEditTitle); err != nil {
+			if err := svc.SetTitle(ctx, id, flagEditTitle); err != nil {
 				return err
 			}
 			fmt.Printf("Updated title for %s\n", id)
@@ -898,7 +928,11 @@ Examples:
 		}
 
 		// Get current description
-		item, err := database.GetItem(id)
+		g, err := svc.Graph(ctx)
+		if err != nil {
+			return err
+		}
+		item, err := g.Item(id)
 		if err != nil {
 			return err
 		}
@@ -965,7 +999,7 @@ Examples:
 		}
 
 		// Update description
-		if err := database.SetDescription(id, string(newContent)); err != nil {
+		if err := svc.SetDescription(ctx, id, string(newContent)); err != nil {
 			return err
 		}
 		fmt.Printf("Updated description for %s\n", id)
@@ -990,16 +1024,17 @@ Example:
   prog desc ts-a1b2c3 "New description text here"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		id := args[0]
 		text := strings.Join(args[1:], " ")
 
-		if err := database.SetDescription(id, text); err != nil {
+		if err := svc.SetDescription(ctx, id, text); err != nil {
 			return err
 		}
 		fmt.Printf("Updated description for %s\n", id)
@@ -1020,13 +1055,14 @@ Example:
   # ts-a1b2c3 is now a child of ep-d4e5f6`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.SetParent(args[0], args[1]); err != nil {
+		if err := svc.SetParent(ctx, args[0], args[1]); err != nil {
 			return err
 		}
 		fmt.Printf("%s is now under %s\n", args[0], args[1])
@@ -1046,14 +1082,15 @@ Example:
   # ts-a1b2c3 is now in myproject`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		project := model.NormalizeProject(args[1])
-		if err := database.SetProject(args[0], project); err != nil {
+		if err := svc.SetProject(ctx, args[0], project); err != nil {
 			return err
 		}
 		fmt.Printf("%s is now in project %s\n", args[0], project)
@@ -1073,14 +1110,15 @@ Example:
   # ts-d4e5f6 cannot start until ts-a1b2c3 is done`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		// blocks A B means B depends on A (A blocks B)
-		if err := database.AddDep(args[1], args[0]); err != nil {
+		if err := svc.AddDep(ctx, args[1], args[0]); err != nil {
 			return err
 		}
 		fmt.Printf("%s now blocks %s\n", args[0], args[1])
@@ -1100,19 +1138,15 @@ Example:
   prog label ts-a1b2c3 urgent`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		// Get item to find its project
-		item, err := database.GetItem(args[0])
-		if err != nil {
-			return err
-		}
-
-		if err := database.AddLabelToItem(args[0], item.Project, args[1]); err != nil {
+		if err := svc.AddLabel(ctx, args[0], args[1]); err != nil {
 			return err
 		}
 		fmt.Printf("Added label %q to %s\n", args[1], args[0])
@@ -1129,19 +1163,15 @@ Example:
   prog unlabel ts-a1b2c3 bug`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
 		// Get item to find its project
-		item, err := database.GetItem(args[0])
-		if err != nil {
-			return err
-		}
-
-		if err := database.RemoveLabelFromItem(args[0], item.Project, args[1]); err != nil {
+		if err := svc.RemoveLabel(ctx, args[0], args[1]); err != nil {
 			return err
 		}
 		fmt.Printf("Removed label %q from %s\n", args[1], args[0])
@@ -1167,13 +1197,14 @@ Examples:
 			return fmt.Errorf("project is required (-p)")
 		}
 
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		labels, err := database.ListLabels(flagProject)
+		labels, err := svc.ListLabels(ctx, flagProject)
 		if err != nil {
 			return err
 		}
@@ -1205,23 +1236,15 @@ Examples:
 			return fmt.Errorf("project is required (-p)")
 		}
 
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		now := time.Now()
-		label := &model.Label{
-			ID:        model.GenerateLabelID(),
-			Name:      args[0],
-			Project:   flagProject,
-			Color:     flagLabelsColor,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		if err := database.CreateLabel(label); err != nil {
+		label := model.NewLabel{Project: flagProject, Name: args[0], Color: flagLabelsColor}
+		if err := svc.CreateLabel(ctx, label); err != nil {
 			return err
 		}
 		fmt.Printf("Created label: %s\n", args[0])
@@ -1242,13 +1265,14 @@ Example:
 			return fmt.Errorf("project is required (-p)")
 		}
 
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.DeleteLabel(flagProject, args[0]); err != nil {
+		if err := svc.DeleteLabel(ctx, flagProject, args[0]); err != nil {
 			return err
 		}
 		fmt.Printf("Deleted label: %s\n", args[0])
@@ -1269,13 +1293,14 @@ Example:
 			return fmt.Errorf("project is required (-p)")
 		}
 
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		if err := database.RenameLabel(flagProject, args[0], args[1]); err != nil {
+		if err := svc.RenameLabel(ctx, flagProject, args[0], args[1]); err != nil {
 			return err
 		}
 		fmt.Printf("Renamed label: %s -> %s\n", args[0], args[1])
@@ -1568,7 +1593,7 @@ Example hook configuration in Claude Code settings:
     "PreCompact": [{"command": "prog prime"}]
   }`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			// Still output prime content even if DB fails
 			printPrimeContent(nil)
@@ -1576,9 +1601,16 @@ Example hook configuration in Claude Code settings:
 		}
 		defer func() { _ = database.Close() }()
 
-		report, _ := database.ProjectStatus("")
-
-		printPrimeContent(report)
+		// Prime must always print its workflow text, so a failed load
+		// degrades to the no-database variant instead of failing the hook.
+		g, err := svc.Graph(cmd.Context())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not load tasks: %v\n", err)
+			printPrimeContent(nil)
+			return nil
+		}
+		report := g.Report("", nil)
+		printPrimeContent(&report)
 		return nil
 	},
 }
@@ -1611,9 +1643,8 @@ Examples:
 		if len(args) > 0 {
 			// Custom path - use VACUUM INTO directly
 			backupPath = args[0]
-			_, err = database.Exec(fmt.Sprintf("VACUUM INTO '%s'", backupPath))
-			if err != nil {
-				return fmt.Errorf("failed to create backup: %w", err)
+			if err := database.BackupTo(backupPath); err != nil {
+				return err
 			}
 		} else {
 			backupPath, err = database.Backup()
@@ -1741,13 +1772,14 @@ Filtering:
 
 Press q to quit.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDB()
+		svc, database, err := openService()
 		if err != nil {
 			return err
 		}
 		defer func() { _ = database.Close() }()
+		ctx := cmd.Context()
 
-		return tui.Run(database)
+		return tui.Run(ctx, svc)
 	},
 }
 
@@ -1933,7 +1965,7 @@ func printItemDetail(item *model.Item, logs []model.Log, deps []string) {
 
 }
 
-func printStatusReport(report *db.StatusReport, showAll bool) {
+func printStatusReport(report *tasks.StatusReport, showAll bool) {
 	project := report.Project
 	if project == "" {
 		project = "(all)"
@@ -2121,19 +2153,19 @@ func formatTimeAgo(t time.Time) string {
 	}
 }
 
-func printDepGraph(edges []db.DepEdge) {
+func printDepGraph(edges []tasks.DepEdge) {
 	// Group by item
 	type depInfo struct {
 		title  string
 		status string
-		deps   []db.DepEdge
+		deps   []tasks.DepEdge
 	}
 	items := make(map[string]*depInfo)
 	order := []string{}
 
 	for _, e := range edges {
 		if _, ok := items[e.ItemID]; !ok {
-			items[e.ItemID] = &depInfo{title: e.ItemTitle, status: e.ItemStatus}
+			items[e.ItemID] = &depInfo{title: e.ItemTitle, status: string(e.ItemStatus)}
 			order = append(order, e.ItemID)
 		}
 		items[e.ItemID].deps = append(items[e.ItemID].deps, e)
@@ -2152,7 +2184,7 @@ func printDepGraph(edges []db.DepEdge) {
 	}
 }
 
-func printPrimeContent(report *db.StatusReport) {
+func printPrimeContent(report *tasks.StatusReport) {
 	fmt.Println(`# Prog CLI Context
 
 This project uses 'prog' for cross-session task management.

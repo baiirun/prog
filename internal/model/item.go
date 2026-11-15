@@ -78,6 +78,25 @@ type Item struct {
 	UpdatedAt        time.Time
 }
 
+// NewItem is the caller-supplied part of an item. The store assigns ID and
+// timestamps, so a caller cannot pick an ID a remote backend would ignore.
+type NewItem struct {
+	Project          string
+	Type             ItemType
+	Title            string
+	Description      string
+	DefinitionOfDone *string
+	Status           Status
+	Priority         int
+}
+
+// NewLabel is the caller-supplied part of a label; the store assigns ID and timestamps.
+type NewLabel struct {
+	Project string
+	Name    string
+	Color   string // optional hex color
+}
+
 // Log is a timestamped audit trail entry for an item.
 type Log struct {
 	ID        int64

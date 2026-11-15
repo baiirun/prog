@@ -2,12 +2,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -60,7 +60,9 @@ const (
 
 // Model is the main Bubble Tea model for the TUI.
 type Model struct {
-	db       *db.DB
+	// ctx lives on the model because Bubble Tea commands take no context.
+	ctx      context.Context
+	svc      *tasks.Service
 	items    []model.Item // all items from db
 	filtered []model.Item // items after filtering
 	cursor   int
@@ -164,8 +166,8 @@ func statusIcon(s model.Status) string {
 	}
 }
 
-// New creates a new TUI model with the given database connection.
-func New(database *db.DB) Model {
+// New creates a new TUI model backed by svc.
+func New(ctx context.Context, svc *tasks.Service) Model {
 	// Default: show draft, open, in_progress, blocked, reviewing
 	statuses := map[model.Status]bool{
 		model.StatusDraft:      true,
@@ -177,7 +179,8 @@ func New(database *db.DB) Model {
 		model.StatusCanceled:   false,
 	}
 	return Model{
-		db:             database,
+		ctx:            ctx,
+		svc:            svc,
 		viewMode:       ViewList,
 		filterStatuses: statuses,
 	}
@@ -204,15 +207,11 @@ type actionMsg struct {
 // loadItems loads items from the database.
 func (m Model) loadItems() tea.Cmd {
 	return func() tea.Msg {
-		items, err := m.db.ListItemsFiltered(db.ListFilter{})
+		g, err := m.svc.Graph(m.ctx)
 		if err != nil {
-			return itemsMsg{items: items, err: err}
+			return itemsMsg{err: err}
 		}
-		// Populate labels for display
-		if err := m.db.PopulateItemLabels(items); err != nil {
-			return itemsMsg{items: items, err: err}
-		}
-		return itemsMsg{items: items, err: nil}
+		return itemsMsg{items: g.List(tasks.ListFilter{})}
 	}
 }
 
@@ -223,15 +222,15 @@ func (m Model) loadDetail() tea.Cmd {
 	}
 	id := m.filtered[m.cursor].ID
 	return func() tea.Msg {
-		logs, err := m.db.GetLogs(id)
+		logs, err := m.svc.Logs(m.ctx, id)
 		if err != nil {
 			return detailMsg{id: id, err: err}
 		}
-		deps, err := m.db.GetDeps(id)
+		g, err := m.svc.Graph(m.ctx)
 		if err != nil {
 			return detailMsg{id: id, err: err}
 		}
-		return detailMsg{logs: logs, deps: deps, id: id}
+		return detailMsg{logs: logs, deps: g.DepsOf(id), id: id}
 	}
 }
 
@@ -442,18 +441,14 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			project = m.filtered[m.cursor].Project
 		}
 		return m, func() tea.Msg {
-			now := time.Now()
-			newItem := &model.Item{
-				ID:        model.GenerateID(model.ItemTypeTask),
-				Project:   project,
-				Type:      model.ItemTypeTask,
-				Title:     text,
-				Status:    model.StatusOpen,
-				Priority:  2,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}
-			if err := m.db.CreateItem(newItem); err != nil {
+			newItem, err := m.svc.CreateItem(m.ctx, model.NewItem{
+				Project:  project,
+				Type:     model.ItemTypeTask,
+				Title:    text,
+				Status:   model.StatusOpen,
+				Priority: 2,
+			})
+			if err != nil {
 				return actionMsg{err: err}
 			}
 			return actionMsg{message: fmt.Sprintf("Created %s", newItem.ID)}
@@ -472,7 +467,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, func() tea.Msg {
-			if err := m.db.AddLog(item.ID, text); err != nil {
+			if err := m.svc.AddLog(m.ctx, item.ID, text); err != nil {
 				return actionMsg{err: err}
 			}
 			return actionMsg{message: fmt.Sprintf("Logged to %s", item.ID)}
@@ -480,11 +475,11 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case InputCancel:
 		return m, func() tea.Msg {
-			if err := m.db.UpdateStatus(item.ID, model.StatusCanceled); err != nil {
+			if err := m.svc.SetStatus(m.ctx, item.ID, model.StatusCanceled); err != nil {
 				return actionMsg{err: err}
 			}
 			if text != "" {
-				if err := m.db.AddLog(item.ID, "Canceled: "+text); err != nil {
+				if err := m.svc.AddLog(m.ctx, item.ID, "Canceled: "+text); err != nil {
 					return actionMsg{err: err}
 				}
 			}
@@ -497,7 +492,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg {
 			// text blocks current item
-			if err := m.db.AddDep(item.ID, text); err != nil {
+			if err := m.svc.AddDep(m.ctx, item.ID, text); err != nil {
 				return actionMsg{err: err}
 			}
 			return actionMsg{message: fmt.Sprintf("%s now blocks %s", text, item.ID)}
@@ -752,7 +747,7 @@ func (m Model) doStart() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusInProgress); err != nil {
+		if err := m.svc.SetStatus(m.ctx, item.ID, model.StatusInProgress); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Started %s", item.ID)}
@@ -769,7 +764,7 @@ func (m Model) doDone() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusDone); err != nil {
+		if err := m.svc.SetStatus(m.ctx, item.ID, model.StatusDone); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Completed %s", item.ID)}
@@ -786,7 +781,7 @@ func (m Model) doOpen() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, func() tea.Msg {
-		if err := m.db.UpdateStatus(item.ID, model.StatusOpen); err != nil {
+		if err := m.svc.SetStatus(m.ctx, item.ID, model.StatusOpen); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Reopened %s", item.ID)}
@@ -799,7 +794,7 @@ func (m Model) doDelete() (Model, tea.Cmd) {
 	}
 	item := m.filtered[m.cursor]
 	return m, func() tea.Msg {
-		if err := m.db.DeleteItem(item.ID); err != nil {
+		if err := m.svc.DeleteItem(m.ctx, item.ID); err != nil {
 			return actionMsg{err: err}
 		}
 		return actionMsg{message: fmt.Sprintf("Deleted %s", item.ID)}
@@ -1293,8 +1288,8 @@ func (m Model) detailViewWithHeight(width, height int) string {
 }
 
 // Run starts the TUI.
-func Run(database *db.DB) error {
-	m := New(database)
+func Run(ctx context.Context, svc *tasks.Service) error {
+	m := New(ctx, svc)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

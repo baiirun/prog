@@ -1,84 +1,49 @@
 package db
 
 import (
+	"context"
 	"testing"
-	"time"
 
 	"github.com/baiirun/prog/internal/model"
 )
 
 func TestEnsureProject(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
 
-	// First call should create the project
-	err := db.EnsureProject("myproject")
-	if err != nil {
+	if err := db.EnsureProject(ctx, "myproject"); err != nil {
 		t.Fatalf("failed to ensure project: %v", err)
 	}
-
-	// Second call should be idempotent (no error)
-	err = db.EnsureProject("myproject")
-	if err != nil {
+	// Idempotent.
+	if err := db.EnsureProject(ctx, "myproject"); err != nil {
 		t.Fatalf("failed on second ensure: %v", err)
 	}
 
-	// Project should appear in list
-	projects, err := db.ListProjects()
+	projects, err := db.ListProjects(ctx)
 	if err != nil {
 		t.Fatalf("failed to list projects: %v", err)
 	}
-
 	if len(projects) != 1 || projects[0] != "myproject" {
 		t.Errorf("expected [myproject], got %v", projects)
 	}
 }
 
-func TestListProjectsEmpty(t *testing.T) {
+func TestListProjectsSorted(t *testing.T) {
 	db := setupTestDB(t)
+	ctx := context.Background()
 
-	projects, err := db.ListProjects()
+	for _, name := range []string{"zeta", "alpha", "mid"} {
+		if err := db.EnsureProject(ctx, name); err != nil {
+			t.Fatalf("failed to ensure project %q: %v", name, err)
+		}
+	}
+
+	projects, err := db.ListProjects(ctx)
 	if err != nil {
 		t.Fatalf("failed to list projects: %v", err)
 	}
-
-	if len(projects) != 0 {
-		t.Errorf("expected empty list, got %v", projects)
-	}
-}
-
-// Regression: `prog add -p " spindle"` stored the project verbatim, so
-// `prog list -p spindle` returned nothing even though show printed "spindle".
-func TestCreateItemNormalizesProjectForFiltering(t *testing.T) {
-	db := setupTestDB(t)
-
-	item := &model.Item{
-		ID:        model.GenerateID(model.ItemTypeTask),
-		Project:   " brandnew\t",
-		Type:      model.ItemTypeTask,
-		Title:     "task in a brand-new project",
-		Status:    model.StatusOpen,
-		Priority:  2,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := db.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-
-	items, err := db.ListItemsFiltered(ListFilter{Project: "brandnew"})
-	if err != nil {
-		t.Fatalf("failed to list items: %v", err)
-	}
-	if len(items) != 1 || items[0].ID != item.ID {
-		t.Fatalf("list -p brandnew: got %d items, want [%s]", len(items), item.ID)
-	}
-
-	projects, err := db.ListProjects()
-	if err != nil {
-		t.Fatalf("failed to list projects: %v", err)
-	}
-	if len(projects) != 1 || projects[0] != "brandnew" {
-		t.Errorf("projects = %q, want [brandnew]", projects)
+	if want := []string{"alpha", "mid", "zeta"}; !equalStrings(projects, want) {
+		t.Errorf("projects = %v, want %v", projects, want)
 	}
 }
 
@@ -94,7 +59,7 @@ func TestMigrateTrimsExistingProjectNames(t *testing.T) {
 			('ts-new', 'spindle', 'task', 'new task', '', 'open')`,
 		`PRAGMA user_version = 3`,
 	} {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.conn.Exec(stmt); err != nil {
 			t.Fatalf("seed %q: %v", stmt, err)
 		}
 	}
@@ -107,19 +72,32 @@ func TestMigrateTrimsExistingProjectNames(t *testing.T) {
 		t.Fatalf("second migrate: %v", err)
 	}
 
-	items, err := db.ListItemsFiltered(ListFilter{Project: "spindle"})
-	if err != nil {
-		t.Fatalf("failed to list items: %v", err)
-	}
-	if len(items) != 2 {
-		t.Fatalf("list -p spindle: got %d items, want 2", len(items))
+	for _, id := range []string{"ep-old", "ts-new"} {
+		if got := loadItem(t, db, id); got.Project != "spindle" {
+			t.Errorf("%s project = %q, want %q", id, got.Project, "spindle")
+		}
 	}
 
-	projects, err := db.ListProjects()
+	projects, err := db.ListProjects(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list projects: %v", err)
 	}
 	if len(projects) != 1 || projects[0] != "spindle" {
 		t.Errorf("projects = %q, want [spindle]", projects)
+	}
+}
+
+// The store stores what it is given; trimming is tasks.Service's job.
+func TestCreateItemStoresProjectVerbatim(t *testing.T) {
+	db := setupTestDB(t)
+
+	item := createItem(t, db, model.NewItem{
+		Project: " raw\t",
+		Type:    model.ItemTypeTask,
+		Title:   "verbatim",
+		Status:  model.StatusOpen,
+	})
+	if got := loadItem(t, db, item.ID); got.Project != " raw\t" {
+		t.Errorf("project = %q, want %q", got.Project, " raw\t")
 	}
 }

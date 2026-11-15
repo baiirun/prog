@@ -1,29 +1,28 @@
 package db
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/baiirun/prog/internal/model"
 )
 
 // AddLog adds a log entry to an item.
-func (db *DB) AddLog(itemID, message string) error {
-	_, err := db.Exec(`
-		INSERT INTO logs (item_id, message) VALUES (?, ?)`,
-		itemID, message)
+func (db *DB) AddLog(ctx context.Context, itemID, message string) error {
+	_, err := db.conn.ExecContext(ctx, `INSERT INTO logs (item_id, message) VALUES (?, ?)`, itemID, message)
 	if err != nil {
-		return fmt.Errorf("failed to add log: %w", err)
+		return fmt.Errorf("failed to add log to %s: %w", itemID, err)
 	}
 	return nil
 }
 
-// GetLogs retrieves all logs for an item, ordered by creation time.
-func (db *DB) GetLogs(itemID string) ([]model.Log, error) {
-	rows, err := db.Query(`
+// Logs returns an item's logs, oldest first.
+func (db *DB) Logs(ctx context.Context, itemID string) ([]model.Log, error) {
+	rows, err := db.conn.QueryContext(ctx, `
 		SELECT id, item_id, message, created_at
-		FROM logs WHERE item_id = ? ORDER BY created_at ASC`, itemID)
+		FROM logs WHERE item_id = ? ORDER BY created_at ASC, id ASC`, itemID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get logs: %w", err)
+		return nil, fmt.Errorf("failed to get logs for %s: %w", itemID, err)
 	}
 	defer func() { _ = rows.Close() }()
 

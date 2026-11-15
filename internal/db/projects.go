@@ -1,24 +1,41 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"time"
-
-	"github.com/baiirun/prog/internal/model"
 )
 
-// EnsureProject creates a project if it doesn't exist.
-// This is idempotent - calling it multiple times with the same name is safe.
-func (db *DB) EnsureProject(name string) error {
-	name = model.NormalizeProject(name)
-	_, err := db.Exec(`
+// EnsureProject creates the project if missing. Idempotent.
+func (db *DB) EnsureProject(ctx context.Context, name string) error {
+	now := time.Now()
+	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO projects (name, created_at, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(name) DO NOTHING`,
-		name, time.Now(), time.Now(),
+		name, now, now,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to ensure project: %w", err)
+		return fmt.Errorf("failed to ensure project %q: %w", name, err)
 	}
 	return nil
+}
+
+// ListProjects returns project names sorted by name.
+func (db *DB) ListProjects(ctx context.Context) ([]string, error) {
+	rows, err := db.conn.QueryContext(ctx, `SELECT name FROM projects ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query projects: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var projects []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan project: %w", err)
+		}
+		projects = append(projects, name)
+	}
+	return projects, rows.Err()
 }

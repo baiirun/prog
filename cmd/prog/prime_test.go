@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
+	"github.com/baiirun/prog/internal/tasks"
 )
 
 func captureOutput(f func()) string {
@@ -52,7 +50,7 @@ func TestPrintPrimeContent_NilReport(t *testing.T) {
 }
 
 func TestPrintPrimeContent_WithReport(t *testing.T) {
-	report := &db.StatusReport{
+	report := &tasks.StatusReport{
 		Project:    "test",
 		Open:       5,
 		InProgress: 2,
@@ -95,7 +93,7 @@ func TestPrintPrimeContent_WithReport(t *testing.T) {
 }
 
 func TestPrintPrimeContent_EmptyReport(t *testing.T) {
-	report := &db.StatusReport{
+	report := &tasks.StatusReport{
 		Project:      "",
 		Open:         0,
 		InProgress:   0,
@@ -176,60 +174,5 @@ func TestPrintPrimeContent_NoLearnings(t *testing.T) {
 		if strings.Contains(output, gone) {
 			t.Errorf("prime still mentions %q", gone)
 		}
-	}
-}
-
-func setupTestDB(t *testing.T) *db.DB {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.db")
-
-	database, err := db.Open(path)
-	if err != nil {
-		t.Fatalf("failed to open db: %v", err)
-	}
-
-	if err := database.Init(); err != nil {
-		t.Fatalf("failed to init db: %v", err)
-	}
-
-	t.Cleanup(func() { _ = database.Close() })
-	return database
-}
-
-func TestPrimeCommand_Integration(t *testing.T) {
-	database := setupTestDB(t)
-
-	// Create some test data
-	item := &model.Item{
-		ID:        "ts-test01",
-		Project:   "test",
-		Type:      model.ItemTypeTask,
-		Title:     "Integration test task",
-		Status:    model.StatusInProgress,
-		Priority:  1,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	if err := database.CreateItem(item); err != nil {
-		t.Fatalf("failed to create item: %v", err)
-	}
-
-	report, err := database.ProjectStatus("")
-	if err != nil {
-		t.Fatalf("failed to get status: %v", err)
-	}
-
-	output := captureOutput(func() {
-		printPrimeContent(report)
-	})
-
-	// Should contain the test task
-	if !strings.Contains(output, "Integration test task") {
-		t.Error("should contain integration test task in output")
-	}
-	// Should prompt for ready command
-	if !strings.Contains(output, "Run 'prog ready [-p project]'") {
-		t.Error("should prompt to run prog ready")
 	}
 }

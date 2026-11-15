@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/baiirun/prog/internal/db"
 	"github.com/baiirun/prog/internal/model"
 )
 
@@ -19,11 +21,13 @@ func TestAdd_ParentLinksToEpic(t *testing.T) {
 	}
 }
 
-// Guards: `add --parent` rejects a parent that is not an epic.
+// Guards: `add --parent` rejects a parent that is not an epic, before
+// writing anything (no orphan item, no label).
 func TestAdd_ParentMustBeEpic(t *testing.T) {
 	p := newProg(t)
 	notEpic := p.ok("add", "Plain task", "-p", "proj")
-	p.fails("add", "Child", "-p", "proj", "--parent", notEpic)
+	p.fails("add", "Child", "-p", "proj", "--parent", notEpic, "-l", "bug")
+	p.requireNothingAdded("proj", notEpic)
 }
 
 // Guards: `add --blocks X` makes X depend on the new item, not the reverse.
@@ -45,10 +49,24 @@ func TestAdd_BlocksMakesTargetDependOnNewItem(t *testing.T) {
 	}
 }
 
-// Guards: `add --blocks` with an unknown ID is an error, not a silent no-op.
+// Guards: `add --blocks` with an unknown ID is an error, not a silent no-op,
+// and writes nothing (no orphan item, no label).
 func TestAdd_BlocksMissingTargetFails(t *testing.T) {
 	p := newProg(t)
-	p.fails("add", "Blocker", "-p", "proj", "--blocks", "ts-000000")
+	p.fails("add", "Blocker", "-p", "proj", "--blocks", "ts-000000", "-l", "bug")
+	p.requireNothingAdded("proj")
+}
+
+// requireNothingAdded fails unless project holds exactly the items in want
+// and no labels.
+func (p *progEnv) requireNothingAdded(project string, want ...string) {
+	p.t.Helper()
+	if got := ids(p.jsonArray("list", "-p", project, "--json")); !slices.Equal(got, want) {
+		p.t.Errorf("items after failed add = %v, want %v", got, want)
+	}
+	if out := p.ok("labels", "-p", project); out != "No labels" {
+		p.t.Errorf("labels after failed add:\n%s", out)
+	}
 }
 
 // Guards: -l, -d and --dod reach the stored item.
@@ -312,4 +330,37 @@ func toStrings(v any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// Guards: `delete` is the one change that can't be undone, so it takes exactly
+// one backup first, and that backup still holds the item.
+func TestDelete_BacksUpFirst(t *testing.T) {
+	p := newProg(t)
+	id := p.ok("add", "Doomed", "-p", "proj")
+	before, err := db.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.ok("delete", id)
+
+	after, err := db.ListBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("delete made %d backups, want 1", len(after)-len(before))
+	}
+	snapshot, err := db.Open(after[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	items, _, err := snapshot.LoadGraph(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(items, func(it model.Item) bool { return it.ID == id }) {
+		t.Errorf("newest backup %s does not contain deleted item %s", after[0].Name, id)
+	}
 }

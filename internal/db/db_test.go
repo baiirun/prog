@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -614,5 +615,47 @@ func TestSetters_BumpUpdatedAt(t *testing.T) {
 				t.Errorf("%s left UpdatedAt at %v", name, got)
 			}
 		})
+	}
+}
+
+// Protects CreateItem's atomicity: a missing parent or Blocks target is a
+// NotFoundError and nothing is written, so `prog add` never leaves an orphan.
+func TestCreateItem_MissingReferenceWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	missing := "ts-missing"
+	for name, in := range map[string]model.NewItem{
+		"parent": {Project: "test", Type: model.ItemTypeTask, Title: "x", Status: model.StatusOpen, ParentID: &missing, Labels: []string{"bug"}},
+		"blocks": {Project: "test", Type: model.ItemTypeTask, Title: "x", Status: model.StatusOpen, Blocks: []string{missing}, Labels: []string{"bug"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			db := setupTestDB(t)
+			_, err := db.CreateItem(ctx, in)
+			requireNotFound(t, err, tasks.RecordItem)
+			items, _, err := db.LoadGraph(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			labels, _ := db.ListLabels(ctx, "test")
+			if len(items) != 0 || len(labels) != 0 {
+				t.Errorf("after failed create: %d items, %d labels; want none", len(items), len(labels))
+			}
+		})
+	}
+}
+
+// Protects that CreateItem writes the parent, labels and dependents it was given.
+func TestCreateItem_WritesLinks(t *testing.T) {
+	db := setupTestDB(t)
+	epic := createItem(t, db, model.NewItem{Project: "test", Type: model.ItemTypeEpic, Title: "epic", Status: model.StatusOpen})
+	target := createTestItem(t, db, "target")
+	item := createItem(t, db, model.NewItem{Project: "test", Type: model.ItemTypeTask, Title: "new", Status: model.StatusOpen,
+		ParentID: &epic.ID, Labels: []string{"bug", "ui"}, Blocks: []string{target.ID}})
+
+	got := loadItem(t, db, item.ID)
+	if got.ParentID == nil || *got.ParentID != epic.ID || !slices.Equal(got.Labels, []string{"bug", "ui"}) {
+		t.Errorf("parent=%v labels=%v, want %s and [bug ui]", got.ParentID, got.Labels, epic.ID)
+	}
+	if deps := loadDeps(t, db); !slices.Equal(deps, []model.Dep{{ItemID: target.ID, DependsOn: item.ID}}) {
+		t.Errorf("deps = %v, want %s depending on %s", deps, target.ID, item.ID)
 	}
 }

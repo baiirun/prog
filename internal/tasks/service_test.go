@@ -179,3 +179,59 @@ func TestAddRemoveLabel_UseItemsProject(t *testing.T) {
 		t.Errorf("Labels after RemoveLabel = %v, want none", got.Labels)
 	}
 }
+
+// snapshots is the real store plus a Snapshot that can be made to fail.
+type snapshots struct {
+	tasks.Store
+	err   error
+	taken int
+}
+
+func (s *snapshots) Snapshot() error {
+	s.taken++
+	return s.err
+}
+
+// Protects delete's fail-closed rule: no snapshot, no delete.
+func TestDeleteItem_RefusesWhenSnapshotFails(t *testing.T) {
+	ctx := context.Background()
+	_, database := newTestService(t)
+	store := &snapshots{Store: database, err: errors.New("disk full")}
+	svc := tasks.NewService(store)
+	item := create(t, svc, "p", model.ItemTypeTask, model.StatusOpen, "keep me")
+
+	if err := svc.DeleteItem(ctx, item.ID); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("DeleteItem err = %v, want the snapshot failure", err)
+	}
+	if _, err := graph(t, svc).Item(item.ID); err != nil {
+		t.Errorf("item deleted although its snapshot failed: %v", err)
+	}
+}
+
+// Protects backup history: a delete that cannot happen (missing item, epic
+// with children) takes no snapshot, so retries don't churn backups.
+func TestDeleteItem_InvalidDeleteTakesNoSnapshot(t *testing.T) {
+	ctx := context.Background()
+	_, database := newTestService(t)
+	store := &snapshots{Store: database}
+	svc := tasks.NewService(store)
+	epic := create(t, svc, "p", model.ItemTypeEpic, model.StatusOpen, "epic")
+	child := create(t, svc, "p", model.ItemTypeTask, model.StatusOpen, "child")
+	if err := svc.SetParent(ctx, child.ID, epic.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var nf *tasks.NotFoundError
+	if err := svc.DeleteItem(ctx, "ts-missing"); !errors.As(err, &nf) {
+		t.Errorf("DeleteItem(missing) err = %v, want *NotFoundError", err)
+	}
+	if err := svc.DeleteItem(ctx, epic.ID); err == nil {
+		t.Error("DeleteItem(epic with child) succeeded")
+	}
+	if store.taken != 0 {
+		t.Errorf("%d snapshots taken for deletes that could not happen", store.taken)
+	}
+	if err := svc.DeleteItem(ctx, child.ID); err != nil || store.taken != 1 {
+		t.Errorf("valid delete: err=%v snapshots=%d, want nil and 1", err, store.taken)
+	}
+}

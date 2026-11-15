@@ -26,7 +26,9 @@ type Store interface {
 	// including edges whose target no longer exists.
 	LoadGraph(ctx context.Context) ([]model.Item, []model.Dep, error)
 
-	// CreateItem stores a new item and returns it with its assigned ID.
+	// CreateItem stores a new item with its labels and Blocks dependencies
+	// atomically and returns it with its assigned ID. A missing ParentID or
+	// Blocks target is a *NotFoundError and nothing is written.
 	// Requires: the item's project exists (see EnsureProject).
 	CreateItem(ctx context.Context, item model.NewItem) (model.Item, error)
 	// DeleteItem atomically removes an item with its logs, labels and

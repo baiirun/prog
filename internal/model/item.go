@@ -88,6 +88,9 @@ type NewItem struct {
 	DefinitionOfDone *string
 	Status           Status
 	Priority         int
+	ParentID         *string  // optional parent; Service requires an epic
+	Labels           []string // label names, created in Project if missing
+	Blocks           []string // IDs of existing items that will depend on this one
 }
 
 // NewLabel is the caller-supplied part of a label; the store assigns ID and timestamps.

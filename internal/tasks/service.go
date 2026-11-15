@@ -26,8 +26,10 @@ func (s *Service) Graph(ctx context.Context) (*Graph, error) {
 	return NewGraph(items, deps)
 }
 
-// CreateItem validates type and status, normalizes the project and ensures it
-// exists, then creates the item.
+// CreateItem validates the item and creates it, with its labels and Blocks
+// dependencies, in one store write.
+// Ensures: an invalid type or status, or a parent that is not an epic, is
+// rejected before anything is written; the store rejects missing references.
 func (s *Service) CreateItem(ctx context.Context, item model.NewItem) (model.Item, error) {
 	if !item.Type.IsValid() {
 		return model.Item{}, fmt.Errorf("invalid item type: %s", item.Type)
@@ -36,12 +38,33 @@ func (s *Service) CreateItem(ctx context.Context, item model.NewItem) (model.Ite
 		return model.Item{}, fmt.Errorf("invalid status: %s", item.Status)
 	}
 	item.Project = model.NormalizeProject(item.Project)
+	if item.ParentID != nil {
+		g, err := s.Graph(ctx)
+		if err != nil {
+			return model.Item{}, err
+		}
+		if err := requireEpic(g, *item.ParentID); err != nil {
+			return model.Item{}, err
+		}
+	}
 	if item.Project != "" {
 		if err := s.store.EnsureProject(ctx, item.Project); err != nil {
 			return model.Item{}, err
 		}
 	}
 	return s.store.CreateItem(ctx, item)
+}
+
+// requireEpic fails unless id names an existing epic.
+func requireEpic(g *Graph, id string) error {
+	parent, err := g.Item(id)
+	if err != nil {
+		return fmt.Errorf("parent %w", err)
+	}
+	if parent.Type != model.ItemTypeEpic {
+		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
+	}
+	return nil
 }
 
 // SetStatus changes an item's stored status.
@@ -71,12 +94,8 @@ func (s *Service) SetParent(ctx context.Context, id, parentID string) error {
 	if _, err := g.Item(id); err != nil {
 		return err
 	}
-	parent, err := g.Item(parentID)
-	if err != nil {
-		return fmt.Errorf("parent %w", err)
-	}
-	if parent.Type != model.ItemTypeEpic {
-		return fmt.Errorf("parent must be an epic, got %s", parent.Type)
+	if err := requireEpic(g, parentID); err != nil {
+		return err
 	}
 	return s.store.SetParent(ctx, id, parentID)
 }
@@ -150,7 +169,33 @@ func (s *Service) SetDefinitionOfDone(ctx context.Context, id string, dod *strin
 	return s.store.SetDefinitionOfDone(ctx, id, dod)
 }
 
+// Snapshotter is implemented by stores that can save a point-in-time copy
+// (SQLite backups). A store whose backend keeps deleted records, such as a
+// trash, need not implement it.
+type Snapshotter interface {
+	Snapshot() error
+}
+
+// DeleteItem permanently removes an item.
+// Ensures: an error, with nothing deleted and no snapshot taken, if the item
+// is missing or still has children; if the store is a Snapshotter, a failed
+// snapshot also aborts the delete, since it cannot be undone without one.
 func (s *Service) DeleteItem(ctx context.Context, id string) error {
+	g, err := s.Graph(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := g.Item(id); err != nil {
+		return err
+	}
+	if children := g.List(ListFilter{Parent: id}); len(children) > 0 {
+		return fmt.Errorf("cannot delete %s: it has %d child item(s); delete or reparent them first", id, len(children))
+	}
+	if snap, ok := s.store.(Snapshotter); ok {
+		if err := snap.Snapshot(); err != nil {
+			return fmt.Errorf("not deleting %s: backup failed: %w", id, err)
+		}
+	}
 	return s.store.DeleteItem(ctx, id)
 }
 

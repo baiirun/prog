@@ -239,3 +239,28 @@ func TestReady_TieBreakByCreatedAtThenID(t *testing.T) {
 		t.Errorf("Ready = %v, want %v", got, want)
 	}
 }
+
+// Protects the nested-epic decision: a child epic counts by its stored
+// status, so finishing its tasks does not complete the parent epic until the
+// child epic itself is closed.
+func TestGraph_NestedEpicCountsByStoredStatus(t *testing.T) {
+	build := func(childEpicStored model.Status) *Graph {
+		return mustGraph(t, []model.Item{
+			item("ep-parent", "p", epic, model.StatusOpen),
+			item("ep-child", "p", epic, childEpicStored, parent("ep-parent")),
+			item("ts-leaf", "p", task, model.StatusDone, parent("ep-child")),
+		})
+	}
+
+	g := build(model.StatusOpen)
+	if child, _ := g.Item("ep-child"); child.Status != model.StatusDone {
+		t.Fatalf("child epic effective status = %s, want done (its only task is done)", child.Status)
+	}
+	if parentEpic, _ := g.Item("ep-parent"); parentEpic.Status != model.StatusOpen {
+		t.Errorf("parent epic = %s, want open: child epic is still stored open", parentEpic.Status)
+	}
+
+	if parentEpic, _ := build(model.StatusDone).Item("ep-parent"); parentEpic.Status != model.StatusDone {
+		t.Errorf("parent epic = %s, want done once the child epic is closed", parentEpic.Status)
+	}
+}
